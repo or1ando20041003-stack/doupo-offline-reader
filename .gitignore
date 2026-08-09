@@ -1,0 +1,25 @@
+node_modules/
+.pnpm-store/
+dist/
+dev-dist/
+coverage/
+.vite/
+.local-diagnostics/
+*.tsbuildinfo
+.DS_Store
+
+# Copyrighted/user-imported novel files and browser database exports must stay local.
+*.txt
+*.epub
+*.mobi
+*.azw*
+*.sqlite
+*.sqlite3
+*.idb
+*.indexeddb
+*.dexie
+book-data/
+imports/
+exports/
+
+# Artificial test fixtures are source files under src/**/*.test.ts, not TXT files.
