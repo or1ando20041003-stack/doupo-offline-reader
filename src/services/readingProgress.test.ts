@@ -4,6 +4,7 @@ import { createReadingProgress, ProgressSaveScheduler } from './readingProgress'
 
 const book: Book = {
   id: 'book', title: '测试', sourceFileName: 'test.txt', sourceEncoding: 'utf-8', importedAt: '',
+  updatedAt: '', totalChapters: 3,
   mainChapterCount: 2, extraChapterCount: 1, totalCharacterCount: 130,
   mainCharacterCount: 100, extraCharacterCount: 30, parserVersion: '2', cleanerVersion: '2',
 }

@@ -1,4 +1,4 @@
-import type { Book, Chapter } from '../domain/models'
+import type { Book, Chapter, ReadingProgress } from '../domain/models'
 import type {
   CleaningWarning,
   ImportStage,
@@ -9,10 +9,8 @@ import type {
   WorkerParsedPayload,
 } from '../book-processing/types'
 import { CLEANER_VERSION, PARSER_VERSION } from '../book-processing/types'
-import { readerRepository } from '../db/repositories'
+import { ReaderRepository, readerRepository } from '../db/repositories'
 import { createChapterId } from '../domain/chapterId'
-
-const CURRENT_BOOK_ID = 'current-book'
 
 export type ImportWarning = ParseWarning | CleaningWarning
 
@@ -25,7 +23,6 @@ export interface ImportSummary {
   cleaningRuleHits: Record<string, number>
   warningCount: number
   canonicalEndingDetected: boolean
-  clearedPreviousProgress: boolean
   timings: ProcessingTimings & { saveMs: number }
 }
 
@@ -33,6 +30,54 @@ export interface ImportResult {
   book: Book
   warnings: ImportWarning[]
   summary: ImportSummary
+}
+
+interface ImportedFileMetadata {
+  name: string
+}
+
+export async function persistParsedBook(
+  file: ImportedFileMetadata,
+  parsed: WorkerParsedPayload,
+  repository: ReaderRepository = readerRepository,
+  now = new Date(),
+): Promise<Book> {
+  const bookId = crypto.randomUUID()
+  const chapters: Chapter[] = parsed.chapters.map((chapter) => ({
+    ...chapter,
+    id: createChapterId(bookId, chapter.section, chapter.order),
+    bookId,
+  }))
+  const timestamp = now.toISOString()
+  const book: Book = {
+    id: bookId,
+    title: file.name.replace(/\.txt$/i, '').trim() || '未命名小说',
+    sourceFileName: file.name,
+    sourceEncoding: parsed.encoding,
+    importedAt: timestamp,
+    updatedAt: timestamp,
+    totalChapters: chapters.length,
+    mainChapterCount: chapters.filter((chapter) => chapter.section === 'main').length,
+    extraChapterCount: chapters.filter((chapter) => chapter.section === 'extra').length,
+    totalCharacterCount: parsed.totalCharacterCount,
+    mainCharacterCount: parsed.mainCharacterCount,
+    extraCharacterCount: parsed.extraCharacterCount,
+    parserVersion: PARSER_VERSION,
+    cleanerVersion: CLEANER_VERSION,
+  }
+  const firstChapter = [...chapters].sort((left, right) => left.order - right.order)[0]
+  if (!firstChapter) throw new Error('文件中没有可保存的章节。')
+  const initialProgress: ReadingProgress = {
+    bookId,
+    chapterId: firstChapter.id,
+    paragraphIndex: 0,
+    characterOffset: 0,
+    chapterProgress: 0,
+    globalProgress: 0,
+    updatedAt: timestamp,
+  }
+  await repository.addBook(book, chapters, initialProgress)
+  return book
 }
 
 function parseInWorker(
@@ -82,29 +127,9 @@ export async function importBookFile(
   const buffer = await file.arrayBuffer()
   const parsed = await parseInWorker(buffer, onStage)
 
-  const chapters: Chapter[] = parsed.chapters.map((chapter) => ({
-    ...chapter,
-    id: createChapterId(CURRENT_BOOK_ID, chapter.section, chapter.order),
-    bookId: CURRENT_BOOK_ID,
-  }))
-  const book: Book = {
-    id: CURRENT_BOOK_ID,
-    title: file.name.replace(/\.txt$/i, '').trim() || '斗破苍穹',
-    sourceFileName: file.name,
-    sourceEncoding: parsed.encoding,
-    importedAt: new Date().toISOString(),
-    mainChapterCount: chapters.filter((chapter) => chapter.section === 'main').length,
-    extraChapterCount: chapters.filter((chapter) => chapter.section === 'extra').length,
-    totalCharacterCount: parsed.totalCharacterCount,
-    mainCharacterCount: parsed.mainCharacterCount,
-    extraCharacterCount: parsed.extraCharacterCount,
-    parserVersion: PARSER_VERSION,
-    cleanerVersion: CLEANER_VERSION,
-  }
-
   onStage('saving')
   const saveStartedAt = performance.now()
-  const replacement = await readerRepository.replaceBookData(book, chapters)
+  const book = await persistParsedBook(file, parsed)
   const saveMs = performance.now() - saveStartedAt
   onStage('complete')
   const warnings: ImportWarning[] = [...parsed.cleaningWarnings, ...parsed.warnings]
@@ -120,8 +145,14 @@ export async function importBookFile(
       cleaningRuleHits: parsed.cleaningRuleHits,
       warningCount: warnings.length,
       canonicalEndingDetected: parsed.canonicalEndingDetected,
-      clearedPreviousProgress: replacement.clearedProgress,
       timings: { ...parsed.timings, saveMs },
     },
   }
+}
+
+export async function importBook(
+  file: File,
+  onStage: (stage: ImportStage) => void = () => undefined,
+): Promise<Book> {
+  return (await importBookFile(file, onStage)).book
 }

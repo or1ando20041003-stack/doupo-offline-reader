@@ -1,6 +1,6 @@
 # 斗破苍穹 Offline Reader
 
-一个 Android 手机优先、同时支持 Windows Chrome/Edge 的私人离线中文小说 PWA。阶段 3.6 已加入 GitHub Pages 自动部署、repository 子路径 PWA 和首次安装帮助；ReaderScreen 支持启动即续读、目录、滚动/左右翻页、文本锚点、设置与四套主题。没有服务器、账号、云同步、网络 API 或在线正文，小说不会离开当前设备。
+一个 Android 手机优先、同时支持 Windows Chrome/Edge 的私人离线中文小说 PWA。阶段 4.1 已把底层升级为多小说书库；现有 ReaderScreen 支持启动即续读、目录、滚动/左右翻页、文本锚点、设置与四套主题。没有服务器、账号、云同步、网络 API 或在线正文，小说不会离开当前设备。
 
 ## 技术栈与目录
 
@@ -63,9 +63,17 @@ npm run verify:deploy
 
 第一次部署和 Android 安装请直接阅读 [ANDROID_INSTALL.md](./ANDROID_INSTALL.md)。GitHub 官方要求在 repository 的 **Settings → Pages** 将 Source 设为 **GitHub Actions**。
 
+## 多书数据库架构（阶段 4.1）
+
+Dexie 数据库版本为 v2。每个 `Book` 使用 UUID；每个 `Chapter` 和 `ReadingProgress` 都绑定 `bookId`，章节主键由 `bookId + section + order` 组成，`chapterNumber` 只用于显示。TXT 导入在单个 transaction 中追加 Book、Chapters 和初始 Progress，不会清空其他小说。
+
+从 v1 打开时，Dexie 在原地 transaction 中保留旧 Book、正文和 Progress，为旧记录补齐多书元数据与缺失的 `bookId`。迁移失败会整体回滚，不删除 store、不重新解析 TXT。`ReaderSettings` 目前仍是全局共享设置。
+
+Repository 提供 `getBooks()`、`getBookById(bookId)`、按 `bookId` 的章节/进度查询，以及只级联删除指定小说的 `deleteBook(bookId)`。书架首页与小说卡片属于阶段 4.2，本阶段 UI 仍直接打开最近阅读/最近导入的一本书。
+
 ## ReaderScreen 架构
 
-`App` 启动时从 IndexedDB 读取当前 Book、ReaderSettings 和 ReadingProgress。有有效进度时直接打开 `progress.chapterId` 并恢复段内位置；无进度或进度指向已不存在章节时回退到第一条 main Chapter。ReaderScreen 只把当前章放进 DOM，大目录仅使用轻量章节索引。
+`App` 启动时从 IndexedDB 选择最近阅读/最近导入的 Book，并读取其 ReadingProgress 与全局 ReaderSettings。有有效进度时直接打开 `progress.chapterId` 并恢复段内位置；无进度或进度指向已不存在章节时回退到第一条 main Chapter。ReaderScreen 只把当前章放进 DOM，大目录仅使用轻量章节索引。
 
 主要组件：
 
@@ -78,7 +86,7 @@ npm run verify:deploy
 - `readingProgress.ts`：字符进度和 1 秒防抖保存；
 - `readerSession.ts`：启动恢复和严格按 `order` 的前后章导航。
 
-章节加载有递增 request sequence，快速请求时只有最后一次结果可更新 UI。严重读取错误显示重新加载/重新导入入口，不会自动删除数据。重新导入必须确认，并由原子 transaction 重新生成章节与清理旧进度。
+章节加载有递增 request sequence，快速请求时只有最后一次结果可更新 UI。严重读取错误显示重新加载/重新导入入口，不会自动删除数据。新 TXT 由原子 transaction 创建为独立 Book，不会覆盖旧书及其进度。
 
 ## Scroll 与 Paged 模式
 
@@ -145,4 +153,4 @@ Workbox 只预缓存 app shell，小说正文只在 IndexedDB。清除站点数�
 
 ## 当前产品边界
 
-阶段 3 不包含书签、搜索、阅读统计、登录、同步、书城、网络正文、TTS 或复杂翻书动画。浏览器删除站点数据后无法恢复书库；不同 Android WebView/厂商浏览器仍建议用目标设备执行一次安装与长时间阅读测试。
+阶段 4.1 只完成多书数据库、迁移、Repository 与导入结构；书架首页、小说卡片、搜索、分类、标签和封面留到阶段 4.2。产品仍不包含书签、登录、同步、书城、网络正文、TTS 或复杂翻书动画。浏览器删除站点数据后无法恢复书库；不同 Android WebView/厂商浏览器仍建议用目标设备执行一次安装与长时间阅读测试。

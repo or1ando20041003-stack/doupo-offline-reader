@@ -6,9 +6,13 @@ export type SourceEncoding = 'utf-8' | 'gb18030'
 export interface Book {
   id: string
   title: string
+  author?: string
   sourceFileName: string
   sourceEncoding: SourceEncoding
   importedAt: string
+  updatedAt: string
+  lastReadAt?: string
+  totalChapters: number
   mainChapterCount: number
   extraChapterCount: number
   totalCharacterCount: number

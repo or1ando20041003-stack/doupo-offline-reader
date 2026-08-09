@@ -110,6 +110,8 @@ if (!inputPath) {
     sourceFileName: basename(resolvedInput),
     sourceEncoding: decoded.encoding,
     importedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    totalChapters: chapters.length,
     mainChapterCount: chapters.filter((chapter) => chapter.section === 'main').length,
     extraChapterCount: chapters.filter((chapter) => chapter.section === 'extra').length,
     totalCharacterCount: mainCharacterCount + extraCharacterCount,
@@ -122,7 +124,15 @@ if (!inputPath) {
   const database = new ReaderDatabase(`doupo-qa-${Date.now()}`)
   const repository = new ReaderRepository(database)
   const saveStartedAt = performance.now()
-  await repository.replaceBookData(book, chapters)
+  await repository.addBook(book, chapters, {
+    bookId,
+    chapterId: chapters[0]!.id,
+    paragraphIndex: 0,
+    characterOffset: 0,
+    chapterProgress: 0,
+    globalProgress: 0,
+    updatedAt: book.importedAt,
+  })
   const saveMs = performance.now() - saveStartedAt
   const persistedChapterCount =
     (await repository.getChaptersBySection(bookId, 'main')).length +

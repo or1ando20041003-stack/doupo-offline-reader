@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { Book, ReaderSettings, ReadingProgress } from '../domain/models'
 import type { ImportStage } from '../book-processing/types'
 import { readerRepository } from '../db/repositories'
-import { importBookFile } from '../services/importBook'
+import { importBook } from '../services/importBook'
 import { ImportScreen } from './ImportScreen'
 import { ReaderScreen } from './ReaderScreen'
 
@@ -21,7 +21,7 @@ export function App() {
     let active = true
     void (async () => {
       try {
-        const book = await readerRepository.getBook()
+        const [book] = await readerRepository.getBooks()
         if (!active) return
         if (!book) {
           setState({ kind: 'empty' })
@@ -46,9 +46,9 @@ export function App() {
   const handleFile = useCallback(async (file: File) => {
     setImportError(null)
     try {
-      const result = await importBookFile(file, setStage)
+      const book = await importBook(file, setStage)
       const settings = await readerRepository.getSettings()
-      setState({ kind: 'ready', book: result.book, settings })
+      setState({ kind: 'ready', book, settings })
     } catch (error) {
       console.error('Import failed:', error)
       setStage('error')
@@ -67,7 +67,7 @@ export function App() {
   }
   return (
     <ReaderScreen
-      key={state.book.importedAt}
+      key={state.book.id}
       book={state.book}
       initialProgress={state.progress}
       initialSettings={state.settings}

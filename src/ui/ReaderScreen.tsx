@@ -92,7 +92,7 @@ export function ReaderScreen({ book, initialProgress, initialSettings, stage, im
     setLoading(true)
     setReaderError(undefined)
     try {
-      const loaded = await readerRepository.getChapter(item.id)
+      const loaded = await readerRepository.getChapter(book.id, item.id)
       if (sequence !== requestSequenceRef.current) return
       if (!loaded) throw new Error('找不到所选章节。')
       const anchor = target === 'end' ? chapterEndAnchor(loaded.paragraphs) : target

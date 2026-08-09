@@ -4,35 +4,53 @@ import type { Book, Chapter, ReadingProgress } from '../domain/models'
 import { ReaderDatabase } from './readerDatabase'
 import { ReaderRepository } from './repositories'
 
-const book: Book = {
-  id: 'current-book',
-  title: '人工测试书',
-  sourceFileName: 'artificial.txt',
-  sourceEncoding: 'utf-8',
-  importedAt: '2026-08-09T00:00:00.000Z',
-  mainChapterCount: 1,
-  extraChapterCount: 0,
-  totalCharacterCount: 4,
-  mainCharacterCount: 4,
-  extraCharacterCount: 0,
-  parserVersion: '1.0.0',
-  cleanerVersion: '1.0.0',
+function makeBook(id: string): Book {
+  return {
+    id,
+    title: `测试书 ${id}`,
+    sourceFileName: `${id}.txt`,
+    sourceEncoding: 'utf-8',
+    importedAt: '2026-08-09T00:00:00.000Z',
+    updatedAt: '2026-08-09T00:00:00.000Z',
+    totalChapters: 1,
+    mainChapterCount: 1,
+    extraChapterCount: 0,
+    totalCharacterCount: 4,
+    mainCharacterCount: 4,
+    extraCharacterCount: 0,
+    parserVersion: '1.0.0',
+    cleanerVersion: '1.0.0',
+  }
 }
 
-const chapter: Chapter = {
-  id: 'current-book:chapter:0',
-  bookId: 'current-book',
-  order: 0,
-  chapterNumber: 1,
-  title: '第一章 测试',
-  section: 'main',
-  paragraphs: ['人工正文'],
-  characterCount: 4,
-  cumulativeCharacterStart: 0,
-  sectionCharacterStart: 0,
+function makeChapter(bookId: string): Chapter {
+  return {
+    id: `${bookId}:main:0`,
+    bookId,
+    order: 0,
+    chapterNumber: 1,
+    title: '第一章 测试',
+    section: 'main',
+    paragraphs: ['人工正文'],
+    characterCount: 4,
+    cumulativeCharacterStart: 0,
+    sectionCharacterStart: 0,
+  }
 }
 
-describe('ReaderRepository', () => {
+function makeProgress(bookId: string, chapterId: string, characterOffset = 0): ReadingProgress {
+  return {
+    bookId,
+    chapterId,
+    paragraphIndex: 0,
+    characterOffset,
+    chapterProgress: characterOffset / 4,
+    globalProgress: characterOffset / 4,
+    updatedAt: '2026-08-09T01:00:00.000Z',
+  }
+}
+
+describe('ReaderRepository multi-book storage', () => {
   let database: ReaderDatabase
   let repository: ReaderRepository
 
@@ -45,53 +63,68 @@ describe('ReaderRepository', () => {
     await database.delete()
   })
 
-  it('persists books, chapters, progress, and settings', async () => {
-    await repository.replaceBookData(book, [chapter])
-    expect(await repository.getBook()).toEqual(book)
-    expect(await repository.getChapter(chapter.id)).toEqual(chapter)
-    expect(await repository.getChaptersBySection(book.id, 'main')).toEqual([chapter])
-    expect(await repository.getChapterIndex(book.id)).toEqual([{ ...chapter, paragraphs: undefined }].map(({ paragraphs: _paragraphs, ...item }) => item))
+  it('stores two books with duplicate display chapter numbers and unique IDs', async () => {
+    const bookA = makeBook('book-a')
+    const bookB = makeBook('book-b')
+    const chapterA = makeChapter(bookA.id)
+    const chapterB = makeChapter(bookB.id)
+    await repository.addBook(bookA, [chapterA], makeProgress(bookA.id, chapterA.id))
+    await repository.addBook(bookB, [chapterB], makeProgress(bookB.id, chapterB.id))
 
-    const progress: ReadingProgress = {
-      bookId: book.id,
-      chapterId: chapter.id,
-      paragraphIndex: 0,
-      characterOffset: 2,
-      chapterProgress: 0.5,
-      globalProgress: 0.5,
-      updatedAt: '2026-08-09T01:00:00.000Z',
-    }
-    await repository.saveProgress(progress)
-    expect(await repository.getProgress(book.id)).toEqual(progress)
-
-    const settings = await repository.getSettings()
-    await repository.saveSettings({ ...settings, fontSize: 22, theme: 'dark' })
-    expect(await repository.getSettings()).toMatchObject({ fontSize: 22, theme: 'dark' })
+    expect(await repository.getBooks()).toHaveLength(2)
+    expect((await repository.getChapters(bookA.id))[0]!.chapterNumber).toBe(1)
+    expect((await repository.getChapters(bookB.id))[0]!.chapterNumber).toBe(1)
+    expect(chapterA.id).not.toBe(chapterB.id)
+    expect(await repository.getBookById(bookA.id)).toEqual(bookA)
+    expect(await repository.getChapter(bookA.id, chapterB.id)).toBeUndefined()
+    expect(await repository.getChapterIndex(bookA.id)).toEqual([
+      {
+        id: chapterA.id,
+        bookId: bookA.id,
+        order: 0,
+        chapterNumber: 1,
+        title: chapterA.title,
+        section: 'main',
+        characterCount: 4,
+        cumulativeCharacterStart: 0,
+        sectionCharacterStart: 0,
+      },
+    ])
   })
 
-  it('uses phase 3 reader defaults and merges older partial settings records', async () => {
-    expect(await repository.getSettings()).toMatchObject({ fontSize: 19, lineHeight: 1.8, theme: 'paper', readingMode: 'scroll' })
+  it('keeps reading progress isolated by bookId', async () => {
+    const bookA = makeBook('book-a')
+    const bookB = makeBook('book-b')
+    const chapterA = makeChapter(bookA.id)
+    const chapterB = makeChapter(bookB.id)
+    await repository.addBook(bookA, [chapterA], makeProgress(bookA.id, chapterA.id, 1))
+    await repository.addBook(bookB, [chapterB], makeProgress(bookB.id, chapterB.id, 3))
+
+    await repository.saveProgress(makeProgress(bookA.id, chapterA.id, 2))
+    expect((await repository.getProgress(bookA.id))?.characterOffset).toBe(2)
+    expect((await repository.getProgress(bookB.id))?.characterOffset).toBe(3)
+  })
+
+  it('deletes only the selected book and its dependent records', async () => {
+    const bookA = makeBook('book-a')
+    const bookB = makeBook('book-b')
+    const chapterA = makeChapter(bookA.id)
+    const chapterB = makeChapter(bookB.id)
+    await repository.addBook(bookA, [chapterA], makeProgress(bookA.id, chapterA.id))
+    await repository.addBook(bookB, [chapterB], makeProgress(bookB.id, chapterB.id))
+
+    await repository.deleteBook(bookA.id)
+    expect(await repository.getBookById(bookA.id)).toBeUndefined()
+    expect(await repository.getChapters(bookA.id)).toEqual([])
+    expect(await repository.getProgress(bookA.id)).toBeUndefined()
+    expect(await repository.getBookById(bookB.id)).toEqual(bookB)
+    expect(await repository.getChapters(bookB.id)).toEqual([chapterB])
+    expect(await repository.getProgress(bookB.id)).toEqual(makeProgress(bookB.id, chapterB.id))
+  })
+
+  it('keeps reader settings global and merges older partial records', async () => {
+    expect(await repository.getSettings()).toMatchObject({ fontSize: 19, theme: 'paper', readingMode: 'scroll' })
     await database.settings.put({ id: 'reader-settings', theme: 'dark' } as never)
     expect(await repository.getSettings()).toMatchObject({ fontSize: 19, theme: 'dark', horizontalPadding: 20 })
-  })
-
-  it('atomically replaces prior imported chapters and progress', async () => {
-    await repository.replaceBookData(book, [chapter])
-    await repository.saveProgress({
-      bookId: book.id,
-      chapterId: chapter.id,
-      paragraphIndex: 0,
-      characterOffset: 1,
-      chapterProgress: 0.25,
-      globalProgress: 0.25,
-      updatedAt: '2026-08-09T01:00:00.000Z',
-    })
-
-    const replacement = { ...chapter, id: 'current-book:chapter:1', order: 1, title: '第二章 新内容' }
-    const result = await repository.replaceBookData({ ...book, title: '重新导入' }, [replacement])
-    expect(result.clearedProgress).toBe(true)
-    expect(await repository.getChapter(chapter.id)).toBeUndefined()
-    expect(await repository.getChapter(replacement.id)).toEqual(replacement)
-    expect(await repository.getProgress(book.id)).toBeUndefined()
   })
 })
