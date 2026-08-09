@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
-import type { ImportStage } from '../book-processing/types'
 import { readerRepository, type ChapterListItem } from '../db/repositories'
 import type { Book, Chapter, ReaderSettings, ReadingProgress } from '../domain/models'
 import type { TextAnchor } from '../domain/progressMetrics'
@@ -7,26 +6,24 @@ import { anchorForSavedProgress, chapterEndAnchor, chapterStartAnchor, getChapte
 import { getAnchorAtViewportPoint, getPagedLayout, restorePagedAnchor, restoreScrollAnchor } from '../services/readingAnchor'
 import { createReadingProgress, ProgressSaveScheduler } from '../services/readingProgress'
 import { ChapterDrawer } from './ChapterDrawer'
-import { ImportStatus } from './ImportStatus'
 import { ReaderControls } from './ReaderControls'
 import { ReaderViewport } from './ReaderViewport'
 import { ReadingStatus } from './ReadingStatus'
 import { SettingsPanel } from './SettingsPanel'
 
 interface ReaderScreenProps {
+  bookId: string
   book: Book
   initialProgress?: ReadingProgress
   initialSettings: ReaderSettings
-  stage: ImportStage | null
-  importError: string | null
-  onFile: (file: File) => void
+  onBack: () => void
 }
 
 function formatPercentage(value: number): string {
   return `${(value * 100).toFixed(1)}%`
 }
 
-export function ReaderScreen({ book, initialProgress, initialSettings, stage, importError, onFile }: ReaderScreenProps) {
+export function ReaderScreen({ bookId, book, initialProgress, initialSettings, onBack }: ReaderScreenProps) {
   const [settings, setSettings] = useState(initialSettings)
   const [chapters, setChapters] = useState<ChapterListItem[]>([])
   const [chapter, setChapter] = useState<Chapter>()
@@ -42,7 +39,6 @@ export function ReaderScreen({ book, initialProgress, initialSettings, stage, im
   const [extraNotice, setExtraNotice] = useState(false)
   const viewportRef = useRef<HTMLDivElement>(null)
   const contentRef = useRef<HTMLElement>(null)
-  const fileInputRef = useRef<HTMLInputElement>(null)
   const chapterRef = useRef<Chapter | undefined>(undefined)
   const settingsRef = useRef<ReaderSettings>(initialSettings)
   const pendingAnchorRef = useRef<TextAnchor | undefined>(undefined)
@@ -92,7 +88,7 @@ export function ReaderScreen({ book, initialProgress, initialSettings, stage, im
     setLoading(true)
     setReaderError(undefined)
     try {
-      const loaded = await readerRepository.getChapter(book.id, item.id)
+      const loaded = await readerRepository.getChapter(bookId, item.id)
       if (sequence !== requestSequenceRef.current) return
       if (!loaded) throw new Error('找不到所选章节。')
       const anchor = target === 'end' ? chapterEndAnchor(loaded.paragraphs) : target
@@ -110,13 +106,13 @@ export function ReaderScreen({ book, initialProgress, initialSettings, stage, im
       setLoading(false)
       setReaderError(error instanceof Error ? error.message : '章节加载失败。')
     }
-  }, [book])
+  }, [book, bookId])
 
   useEffect(() => {
     let active = true
     void (async () => {
       try {
-        const index = await readerRepository.getChapterIndex(book.id)
+        const index = await readerRepository.getChapterIndex(bookId)
         if (!active) return
         setChapters(index)
         const initial = resolveInitialChapter(index, initialProgress)
@@ -133,7 +129,7 @@ export function ReaderScreen({ book, initialProgress, initialSettings, stage, im
       }
     })()
     return () => { active = false }
-  }, [book.id, initialProgress, openChapter])
+  }, [bookId, initialProgress, openChapter])
 
   useLayoutEffect(() => {
     if (!chapter) return
@@ -283,13 +279,16 @@ export function ReaderScreen({ book, initialProgress, initialSettings, stage, im
     schedulerRef.current?.flush().catch((error) => console.error('Final progress save failed:', error))
   }, [])
 
-  const requestReimport = () => {
-    const confirmed = window.confirm('重新导入会重新生成章节，并可能清除当前阅读位置。确定继续吗？')
-    if (confirmed) fileInputRef.current?.click()
-  }
+  const returnToBookshelf = useCallback(async () => {
+    try {
+      if (chapterRef.current) await persistAnchor(captureAnchor(), true)
+    } catch (error) {
+      console.error('Saving before returning to bookshelf failed:', error)
+    }
+    onBack()
+  }, [captureAnchor, onBack, persistAnchor])
 
   const percentage = formatPercentage(progress?.globalProgress ?? 0)
-  const busy = stage !== null && !['complete', 'error'].includes(stage)
   const style = {
     '--reader-font-family': settings.fontFamily,
     '--reader-font-size': `${settings.fontSize}px`,
@@ -320,6 +319,7 @@ export function ReaderScreen({ book, initialProgress, initialSettings, stage, im
           progressLabel={percentage}
           canPrevious={Boolean(neighbors.previous) && !loading}
           canNext={Boolean(neighbors.next) && !loading}
+          onBack={() => { void returnToBookshelf() }}
           onOpenChapters={() => { setDrawerOpen(true); setControlsOpen(false) }}
           onOpenSettings={() => { setSettingsOpen(true); setControlsOpen(false) }}
           onPrevious={() => { void navigateChapter(neighbors.previous) }}
@@ -327,17 +327,14 @@ export function ReaderScreen({ book, initialProgress, initialSettings, stage, im
         />
       )}
       <ChapterDrawer open={drawerOpen} bookTitle={book.title} chapters={chapters} currentChapterId={chapter?.id} onSelect={(item) => { void navigateChapter(item) }} onClose={() => setDrawerOpen(false)} />
-      <SettingsPanel open={settingsOpen} settings={settings} onChange={updateSettings} onReimport={requestReimport} onClose={() => setSettingsOpen(false)} />
+      <SettingsPanel open={settingsOpen} settings={settings} onChange={updateSettings} onClose={() => setSettingsOpen(false)} />
       {extraNotice && <div className="reader-toast" role="status">已进入附加内容</div>}
-      {busy && <div className="reader-import-overlay"><ImportStatus stage={stage} /></div>}
-      {importError && <div className="reader-toast error-text" role="alert">{importError}</div>}
       {readerError && (
         <div className="reader-error-actions">
           <button type="button" onClick={() => window.location.reload()}>重新加载</button>
-          <button type="button" onClick={requestReimport}>重新导入</button>
+          <button type="button" onClick={() => { void returnToBookshelf() }}>返回书架</button>
         </div>
       )}
-      <input ref={fileInputRef} className="visually-hidden" type="file" accept=".txt,text/plain" onChange={(event) => { const file = event.target.files?.[0]; if (file) onFile(file); event.target.value = '' }} />
     </main>
   )
 }

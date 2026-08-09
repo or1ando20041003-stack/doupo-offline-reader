@@ -1,6 +1,6 @@
 # 斗破苍穹 Offline Reader
 
-一个 Android 手机优先、同时支持 Windows Chrome/Edge 的私人离线中文小说 PWA。阶段 4.1 已把底层升级为多小说书库；现有 ReaderScreen 支持启动即续读、目录、滚动/左右翻页、文本锚点、设置与四套主题。没有服务器、账号、云同步、网络 API 或在线正文，小说不会离开当前设备。
+一个 Android 手机优先、同时支持 Windows Chrome/Edge 的私人离线中文小说 PWA。阶段 4.2 已加入多小说书架首页；ReaderScreen 支持断点续读、目录、滚动/左右翻页、文本锚点、设置与四套主题。没有服务器、账号、云同步、网络 API 或在线正文，小说不会离开当前设备。
 
 ## 技术栈与目录
 
@@ -16,8 +16,8 @@ src/
   book-processing/   TXT 解码、分层清洗、章节解析与 QA
   db/                Dexie schema、章节索引和 Repository
   domain/            模型、字符进度、order 导航、阅读会话
-  services/          导入、DOM 文本锚点、节流进度保存
-  ui/                ReaderScreen、Viewport、Controls、Drawer、Settings
+  services/          书架装配、导入、DOM 文本锚点、节流进度保存
+  ui/                BookshelfScreen、BookCard、ReaderScreen 与阅读组件
   workers/           后台导入 Worker
 scripts/             本地真实 TXT 检查工具
 ```
@@ -69,11 +69,23 @@ Dexie 数据库版本为 v2。每个 `Book` 使用 UUID；每个 `Chapter` 和 `
 
 从 v1 打开时，Dexie 在原地 transaction 中保留旧 Book、正文和 Progress，为旧记录补齐多书元数据与缺失的 `bookId`。迁移失败会整体回滚，不删除 store、不重新解析 TXT。`ReaderSettings` 目前仍是全局共享设置。
 
-Repository 提供 `getBooks()`、`getBookById(bookId)`、按 `bookId` 的章节/进度查询，以及只级联删除指定小说的 `deleteBook(bookId)`。书架首页与小说卡片属于阶段 4.2，本阶段 UI 仍直接打开最近阅读/最近导入的一本书。
+Repository 提供 `getBooks()`、`getBookById(bookId)`、按 `bookId` 的章节/进度查询，以及只级联删除指定小说的 `deleteBook(bookId)`。
+
+## BookshelfScreen 架构（阶段 4.2）
+
+`App` 启动后固定进入书架，不再默认打开某一本书。`bookshelf.ts` 负责把 Book、对应 Progress 和最近章节标题装配为书卡数据；UI 组件不直接拼装数据库查询。
+
+- `BookshelfScreen`：书架布局、导入状态和删除对话框协调；
+- `BookCard`：书名、最近章节、阅读百分比、最后阅读时间和继续阅读；
+- `EmptyBookshelf`：正常的空书架提示与第一本 TXT 导入入口；
+- `ImportBookButton`：书架统一文件选择入口；
+- `DeleteBookDialog`：明确列出章节和进度删除范围。
+
+书卡按 `lastReadAt` 优先、无阅读时间时按 `importedAt` 排序。导入完成后停留在书架；删除只影响所选 Book。点击书卡后以显式 `bookId` 加载对应 Book、Progress 和全局 Settings。
 
 ## ReaderScreen 架构
 
-`App` 启动时从 IndexedDB 选择最近阅读/最近导入的 Book，并读取其 ReadingProgress 与全局 ReaderSettings。有有效进度时直接打开 `progress.chapterId` 并恢复段内位置；无进度或进度指向已不存在章节时回退到第一条 main Chapter。ReaderScreen 只把当前章放进 DOM，大目录仅使用轻量章节索引。
+`ReaderScreen` 接收显式 `bookId`，所有章节查询都限制在该书。有有效进度时直接打开 `progress.chapterId` 并恢复段内位置；无进度或进度指向已不存在章节时回退到第一条 main Chapter。ReaderScreen 只把当前章放进 DOM，大目录仅使用轻量章节索引。顶部“书架”按钮会先保存当前文本位置，再返回并刷新书卡的 `lastReadAt`。
 
 主要组件：
 
@@ -86,7 +98,7 @@ Repository 提供 `getBooks()`、`getBookById(bookId)`、按 `bookId` 的章节/
 - `readingProgress.ts`：字符进度和 1 秒防抖保存；
 - `readerSession.ts`：启动恢复和严格按 `order` 的前后章导航。
 
-章节加载有递增 request sequence，快速请求时只有最后一次结果可更新 UI。严重读取错误显示重新加载/重新导入入口，不会自动删除数据。新 TXT 由原子 transaction 创建为独立 Book，不会覆盖旧书及其进度。
+章节加载有递增 request sequence，快速请求时只有最后一次结果可更新 UI。严重读取错误显示重新加载/返回书架入口，不会自动删除数据。新 TXT 由原子 transaction 创建为独立 Book，不会覆盖旧书及其进度。
 
 ## Scroll 与 Paged 模式
 
@@ -141,7 +153,7 @@ Windows：正文默认居中且最大 760px。Scroll 支持鼠标滚轮以及浏
 2. 导入本地 TXT，切换章节/主题/模式并等待进度保存；
 3. 在 Application 中确认 Manifest 与 Service Worker；安装 PWA；
 4. 断网或停止静态服务器，完全关闭后重开；
-5. 应直接进入 ReaderScreen，恢复本地章节、文本位置、主题和模式，目录/设置/翻页均可用。
+5. 应进入 BookshelfScreen；点击小说后恢复本地章节、文本位置、主题和模式，目录/设置/翻页均可用。
 
 Workbox 只预缓存 app shell，小说正文只在 IndexedDB。清除站点数据、隐私模式退出或卸载时选择清理数据会删除本地书库。
 
@@ -153,4 +165,4 @@ Workbox 只预缓存 app shell，小说正文只在 IndexedDB。清除站点数�
 
 ## 当前产品边界
 
-阶段 4.1 只完成多书数据库、迁移、Repository 与导入结构；书架首页、小说卡片、搜索、分类、标签和封面留到阶段 4.2。产品仍不包含书签、登录、同步、书城、网络正文、TTS 或复杂翻书动画。浏览器删除站点数据后无法恢复书库；不同 Android WebView/厂商浏览器仍建议用目标设备执行一次安装与长时间阅读测试。
+阶段 4.2 已完成多小说书架、书卡、导入留在书架、删除确认与返回书架。搜索、分类、标签、封面、账号和云同步仍未加入；产品也不包含书签、书城、网络正文、TTS 或复杂翻书动画。浏览器删除站点数据后无法恢复书库；不同 Android WebView/厂商浏览器仍建议用目标设备执行一次安装与长时间阅读测试。

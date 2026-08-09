@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import type { WorkerParsedPayload } from '../book-processing/types'
 import { ReaderDatabase } from '../db/readerDatabase'
 import { ReaderRepository } from '../db/repositories'
+import { loadBookshelf } from './bookshelf'
 import { persistParsedBook } from './importBook'
 
 const parsed: WorkerParsedPayload = {
@@ -42,8 +43,8 @@ describe('persistParsedBook', () => {
   })
 
   it('generates a fresh bookId, unique chapter IDs, and initial progress per import', async () => {
-    const first = await persistParsedBook({ name: '第一本.txt' }, parsed, repository)
-    const second = await persistParsedBook({ name: '第二本.txt' }, parsed, repository)
+    const first = await persistParsedBook({ name: '第一本.txt' }, parsed, repository, new Date('2026-08-09T00:00:00.000Z'))
+    const second = await persistParsedBook({ name: '第二本.txt' }, parsed, repository, new Date('2026-08-09T01:00:00.000Z'))
     const firstChapter = (await repository.getChapters(first.id))[0]!
     const secondChapter = (await repository.getChapters(second.id))[0]!
 
@@ -53,5 +54,6 @@ describe('persistParsedBook', () => {
     expect(secondChapter.chapterNumber).toBe(1)
     expect(await repository.getProgress(first.id)).toMatchObject({ bookId: first.id, chapterId: firstChapter.id })
     expect(await repository.getProgress(second.id)).toMatchObject({ bookId: second.id, chapterId: secondChapter.id })
+    expect((await loadBookshelf(repository)).map(({ book }) => book.title)).toEqual(['第二本', '第一本'])
   })
 })

@@ -7,6 +7,7 @@ interface DeferredInstallPrompt extends Event {
 }
 
 function detectStandalone(): boolean {
+  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false
   const navigatorStandalone = Boolean((navigator as Navigator & { standalone?: boolean }).standalone)
   return isStandaloneDisplay(window.matchMedia('(display-mode: standalone)').matches, navigatorStandalone)
 }

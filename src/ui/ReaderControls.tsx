@@ -3,6 +3,7 @@ interface ReaderControlsProps {
   progressLabel: string
   canPrevious: boolean
   canNext: boolean
+  onBack: () => void
   onOpenChapters: () => void
   onOpenSettings: () => void
   onPrevious: () => void
@@ -14,6 +15,7 @@ export function ReaderControls({
   progressLabel,
   canPrevious,
   canNext,
+  onBack,
   onOpenChapters,
   onOpenSettings,
   onPrevious,
@@ -22,7 +24,10 @@ export function ReaderControls({
   return (
     <div className="reader-controls" aria-label="阅读控制">
       <header className="reader-topbar">
-        <button type="button" className="reader-control-button" aria-label="打开章节目录" onClick={onOpenChapters}>目录</button>
+        <span className="reader-topbar-actions">
+          <button type="button" className="reader-control-button" aria-label="返回书架" onClick={onBack}>书架</button>
+          <button type="button" className="reader-control-button" aria-label="打开章节目录" onClick={onOpenChapters}>目录</button>
+        </span>
         <span className="reader-control-title" title={title}>{title}</span>
         <button type="button" className="reader-control-button" aria-label="打开阅读设置" onClick={onOpenSettings}>设置</button>
       </header>

@@ -4,7 +4,6 @@ interface SettingsPanelProps {
   open: boolean
   settings: ReaderSettings
   onChange: (patch: Partial<ReaderSettings>) => void
-  onReimport: () => void
   onClose: () => void
 }
 
@@ -37,7 +36,7 @@ function RangeSetting({ label, value, min, max, step, unit, onChange }: { label:
   )
 }
 
-export function SettingsPanel({ open, settings, onChange, onReimport, onClose }: SettingsPanelProps) {
+export function SettingsPanel({ open, settings, onChange, onClose }: SettingsPanelProps) {
   if (!open) return null
   return (
     <div className="reader-overlay settings-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
@@ -55,7 +54,6 @@ export function SettingsPanel({ open, settings, onChange, onReimport, onClose }:
           <RangeSetting label="桌面内容宽度" value={settings.contentWidth} min={560} max={960} step={20} unit="px" onChange={(contentWidth) => onChange({ contentWidth })} />
           <fieldset className="segmented-setting"><legend>首行缩进</legend><button type="button" className={settings.paragraphIndent === '2em' ? 'is-selected' : ''} onClick={() => onChange({ paragraphIndent: '2em' })}>开启</button><button type="button" className={settings.paragraphIndent === '0' ? 'is-selected' : ''} onClick={() => onChange({ paragraphIndent: '0' })}>关闭</button></fieldset>
           <fieldset className="theme-setting"><legend>主题</legend>{THEMES.map((theme) => <button key={theme.value} type="button" data-theme-preview={theme.value} className={settings.theme === theme.value ? 'is-selected' : ''} onClick={() => onChange({ theme: theme.value })}><span />{theme.label}</button>)}</fieldset>
-          <div className="settings-danger"><button type="button" onClick={onReimport}>重新导入 TXT</button><small>重新导入会重新生成章节，并可能清除当前阅读位置。</small></div>
         </div>
       </aside>
     </div>

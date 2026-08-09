@@ -105,6 +105,17 @@ describe('ReaderRepository multi-book storage', () => {
     expect((await repository.getProgress(bookB.id))?.characterOffset).toBe(3)
   })
 
+  it('sorts recently read books first and otherwise uses importedAt', async () => {
+    const recentlyImported = { ...makeBook('recent-import'), importedAt: '2026-08-08T00:00:00.000Z' }
+    const recentlyRead = { ...makeBook('recent-read'), importedAt: '2026-08-01T00:00:00.000Z', lastReadAt: '2026-08-09T00:00:00.000Z' }
+    const older = { ...makeBook('older'), importedAt: '2026-08-02T00:00:00.000Z' }
+    for (const book of [recentlyImported, recentlyRead, older]) {
+      const chapter = makeChapter(book.id)
+      await repository.addBook(book, [chapter], makeProgress(book.id, chapter.id))
+    }
+    expect((await repository.getBooks()).map(({ id }) => id)).toEqual(['recent-read', 'recent-import', 'older'])
+  })
+
   it('deletes only the selected book and its dependent records', async () => {
     const bookA = makeBook('book-a')
     const bookB = makeBook('book-b')

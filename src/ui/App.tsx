@@ -1,79 +1,99 @@
 import { useCallback, useEffect, useState } from 'react'
-import type { Book, ReaderSettings, ReadingProgress } from '../domain/models'
 import type { ImportStage } from '../book-processing/types'
 import { readerRepository } from '../db/repositories'
+import type { BookshelfEntry, ReaderBookState } from '../services/bookshelf'
+import { loadBookshelf, loadReaderBook } from '../services/bookshelf'
 import { importBook } from '../services/importBook'
-import { ImportScreen } from './ImportScreen'
+import { BookshelfScreen } from './BookshelfScreen'
 import { ReaderScreen } from './ReaderScreen'
 
 type AppState =
   | { kind: 'loading' }
-  | { kind: 'empty' }
-  | { kind: 'ready'; book: Book; progress?: ReadingProgress; settings: ReaderSettings }
+  | { kind: 'bookshelf'; entries: BookshelfEntry[] }
+  | { kind: 'reader'; bookId: string; reader: ReaderBookState }
   | { kind: 'error'; message: string }
+
+export function createReaderState(bookId: string, reader: ReaderBookState): AppState {
+  return { kind: 'reader', bookId, reader }
+}
 
 export function App() {
   const [state, setState] = useState<AppState>({ kind: 'loading' })
   const [stage, setStage] = useState<ImportStage | null>(null)
   const [importError, setImportError] = useState<string | null>(null)
 
+  const showBookshelf = useCallback(async () => {
+    const entries = await loadBookshelf()
+    setState({ kind: 'bookshelf', entries })
+  }, [])
+
   useEffect(() => {
     let active = true
-    void (async () => {
-      try {
-        const [book] = await readerRepository.getBooks()
-        if (!active) return
-        if (!book) {
-          setState({ kind: 'empty' })
-          return
-        }
-        const [progress, settings] = await Promise.all([
-          readerRepository.getProgress(book.id),
-          readerRepository.getSettings(),
-        ])
-        document.documentElement.dataset.readerTheme = settings.theme
-        if (active) setState({ kind: 'ready', book, progress, settings })
-      } catch (error) {
+    void loadBookshelf()
+      .then((entries) => { if (active) setState({ kind: 'bookshelf', entries }) })
+      .catch((error) => {
         console.error('Database startup failed:', error)
-        if (active) setState({ kind: 'error', message: '无法打开本地数据库，请检查浏览器存储权限。' })
-      }
-    })()
-    return () => {
-      active = false
-    }
+        if (active) setState({ kind: 'error', message: '无法打开本地书架，请检查浏览器存储权限。' })
+      })
+    return () => { active = false }
   }, [])
 
   const handleFile = useCallback(async (file: File) => {
     setImportError(null)
     try {
-      const book = await importBook(file, setStage)
-      const settings = await readerRepository.getSettings()
-      setState({ kind: 'ready', book, settings })
+      await importBook(file, setStage)
+      await showBookshelf()
     } catch (error) {
       console.error('Import failed:', error)
       setStage('error')
       setImportError(error instanceof Error ? error.message : '导入失败，请重试。')
     }
+  }, [showBookshelf])
+
+  const openBook = useCallback(async (bookId: string) => {
+    try {
+      setStage(null)
+      setImportError(null)
+      const reader = await loadReaderBook(bookId)
+      document.documentElement.dataset.readerTheme = reader.settings.theme
+      setState(createReaderState(bookId, reader))
+    } catch (error) {
+      console.error('Opening book failed:', error)
+      setState({ kind: 'error', message: error instanceof Error ? error.message : '无法打开这本小说。' })
+    }
   }, [])
 
+  const deleteBook = useCallback(async (bookId: string) => {
+    await readerRepository.deleteBook(bookId)
+    await showBookshelf()
+  }, [showBookshelf])
+
   if (state.kind === 'loading') {
-    return <main className="app-shell status-screen">正在打开本地书库……</main>
+    return <main className="app-shell status-screen">正在打开本地书架……</main>
   }
   if (state.kind === 'error') {
     return <main className="app-shell status-screen error-text">{state.message}</main>
   }
-  if (state.kind === 'empty') {
-    return <ImportScreen stage={stage} error={importError} onFile={handleFile} />
+  if (state.kind === 'bookshelf') {
+    return (
+      <BookshelfScreen
+        entries={state.entries}
+        stage={stage}
+        error={importError}
+        onFile={handleFile}
+        onOpen={(bookId) => { void openBook(bookId) }}
+        onDelete={deleteBook}
+      />
+    )
   }
   return (
     <ReaderScreen
-      key={state.book.id}
-      book={state.book}
-      initialProgress={state.progress}
-      initialSettings={state.settings}
-      stage={stage}
-      importError={importError}
-      onFile={handleFile}
+      key={state.bookId}
+      bookId={state.bookId}
+      book={state.reader.book}
+      initialProgress={state.reader.progress}
+      initialSettings={state.reader.settings}
+      onBack={() => { void showBookshelf() }}
     />
   )
 }
