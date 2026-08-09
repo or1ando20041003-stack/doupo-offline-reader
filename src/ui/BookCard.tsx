@@ -27,6 +27,14 @@ export function formatLastReadAt(lastReadAt: string | undefined, now = new Date(
   return new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric' }).format(timestamp)
 }
 
+function formatBookSize(value: number): string {
+  return value >= 10_000 ? `${(value / 10_000).toFixed(1)}万字` : `${value.toLocaleString('zh-CN')}字`
+}
+
+function formatImportDate(importedAt: string): string {
+  return new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'short', day: 'numeric' }).format(new Date(importedAt))
+}
+
 export function BookCard({ entry, now = new Date(), onOpen, onDelete }: BookCardProps) {
   const { book } = entry
   const started = Boolean(book.lastReadAt && entry.progress)
@@ -42,6 +50,7 @@ export function BookCard({ entry, now = new Date(), onOpen, onDelete }: BookCard
         <span className="book-card-content">
           <strong title={book.title}>{book.title}</strong>
           {book.author && <small>{book.author}</small>}
+          <span className="book-card-stats">{book.totalChapters.toLocaleString('zh-CN')} 章 · {formatBookSize(book.wordCount ?? book.totalCharacterCount)} · {formatImportDate(book.importedAt)}导入</span>
           <span className="book-card-chapter">{chapterLabel}</span>
           <span className="book-card-meta">
             <span>{progressLabel}</span>

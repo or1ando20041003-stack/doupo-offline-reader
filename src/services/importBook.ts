@@ -13,81 +13,70 @@ import { ReaderRepository, readerRepository } from '../db/repositories'
 import { createChapterId } from '../domain/chapterId'
 
 export type ImportWarning = ParseWarning | CleaningWarning
+export type DuplicateAction = 'overwrite' | 'keep'
 
-export interface ImportSummary {
-  encoding: Book['sourceEncoding']
-  mainChapterCount: number
-  extraChapterCount: number
-  totalCharacterCount: number
-  appliedCleaningRuleCount: number
-  cleaningRuleHits: Record<string, number>
-  warningCount: number
-  canonicalEndingDetected: boolean
-  timings: ProcessingTimings & { saveMs: number }
-}
-
-export interface ImportResult {
-  book: Book
+export interface PreparedBookImport {
+  fileName: string
+  suggestedTitle: string
+  parsed: WorkerParsedPayload
   warnings: ImportWarning[]
-  summary: ImportSummary
-}
-
-interface ImportedFileMetadata {
-  name: string
-}
-
-export async function persistParsedBook(
-  file: ImportedFileMetadata,
-  parsed: WorkerParsedPayload,
-  repository: ReaderRepository = readerRepository,
-  now = new Date(),
-): Promise<Book> {
-  const bookId = crypto.randomUUID()
-  const chapters: Chapter[] = parsed.chapters.map((chapter) => ({
-    ...chapter,
-    id: createChapterId(bookId, chapter.section, chapter.order),
-    bookId,
-  }))
-  const timestamp = now.toISOString()
-  const book: Book = {
-    id: bookId,
-    title: file.name.replace(/\.txt$/i, '').trim() || '未命名小说',
-    sourceFileName: file.name,
-    sourceEncoding: parsed.encoding,
-    importedAt: timestamp,
-    updatedAt: timestamp,
-    totalChapters: chapters.length,
-    mainChapterCount: chapters.filter((chapter) => chapter.section === 'main').length,
-    extraChapterCount: chapters.filter((chapter) => chapter.section === 'extra').length,
-    totalCharacterCount: parsed.totalCharacterCount,
-    mainCharacterCount: parsed.mainCharacterCount,
-    extraCharacterCount: parsed.extraCharacterCount,
-    parserVersion: PARSER_VERSION,
-    cleanerVersion: CLEANER_VERSION,
+  duplicateBook?: Book
+  summary: {
+    encoding: Book['sourceEncoding']
+    mainChapterCount: number
+    extraChapterCount: number
+    totalChapters: number
+    totalCharacterCount: number
+    warningCount: number
+    timings: ProcessingTimings
   }
-  const firstChapter = [...chapters].sort((left, right) => left.order - right.order)[0]
-  if (!firstChapter) throw new Error('文件中没有可保存的章节。')
-  const initialProgress: ReadingProgress = {
-    bookId,
-    chapterId: firstChapter.id,
-    paragraphIndex: 0,
-    characterOffset: 0,
-    chapterProgress: 0,
-    globalProgress: 0,
-    updatedAt: timestamp,
-  }
-  await repository.addBook(book, chapters, initialProgress)
-  return book
 }
 
-function parseInWorker(
+export interface ConfirmBookImportOptions {
+  title: string
+  duplicateAction?: DuplicateAction
+}
+
+interface ImportWorkerLike {
+  onmessage: ((event: MessageEvent<WorkerImportResponse>) => void) | null
+  onerror: ((event: ErrorEvent) => void) | null
+  postMessage(message: WorkerImportRequest, transfer: Transferable[]): void
+  terminate(): void
+}
+
+type ImportWorkerFactory = () => ImportWorkerLike
+
+function defaultWorkerFactory(): ImportWorkerLike {
+  return new Worker(new URL('../workers/bookImport.worker.ts', import.meta.url), { type: 'module' })
+}
+
+export function inferBookTitle(fileName: string): string {
+  const withoutExtension = fileName.replace(/\.txt$/iu, '').trim()
+  const withoutEditionSuffix = withoutExtension
+    .replace(/[\s._-]*[（(【\[]?(?:完整版|全本|全集)[）)】\]]?$/u, '')
+    .trim()
+  return withoutEditionSuffix || '未命名小说'
+}
+
+export function getImportErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    if (/请选择扩展名|文件为空|没有可保存|无效控制字符|后台文本处理程序/u.test(error.message)) {
+      return error.message
+    }
+    if (error.name === 'NotReadableError' || /read|读取/iu.test(error.message)) {
+      return '无法读取这个 TXT 文件，请确认文件没有损坏后重新选择。'
+    }
+  }
+  return '无法解析这个 TXT 文件，请确认它是完整的纯文本小说。'
+}
+
+export function parseBookBufferInWorker(
   buffer: ArrayBuffer,
   onStage: (stage: ImportStage) => void,
+  createWorker: ImportWorkerFactory = defaultWorkerFactory,
 ): Promise<WorkerParsedPayload> {
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('../workers/bookImport.worker.ts', import.meta.url), {
-      type: 'module',
-    })
+    const worker = createWorker()
 
     worker.onmessage = (event: MessageEvent<WorkerImportResponse>) => {
       const response = event.data
@@ -115,44 +104,124 @@ function parseInWorker(
   })
 }
 
-export async function importBookFile(
+async function findDuplicateBook(
+  title: string,
+  parsed: WorkerParsedPayload,
+  repository: ReaderRepository,
+): Promise<Book | undefined> {
+  const hashMatch = await repository.getBookBySourceHash(parsed.contentHash)
+  if (hashMatch) return hashMatch
+
+  const normalizedTitle = title.trim().toLocaleLowerCase('zh-CN')
+  const books = await repository.getBooks()
+  return books.find((book) => (
+    book.title.trim().toLocaleLowerCase('zh-CN') === normalizedTitle
+    && book.totalChapters === parsed.chapters.length
+    && book.totalCharacterCount === parsed.totalCharacterCount
+  ))
+}
+
+export async function prepareBookImport(
   file: File,
   onStage: (stage: ImportStage) => void,
-): Promise<ImportResult> {
+  repository: ReaderRepository = readerRepository,
+  createWorker: ImportWorkerFactory = defaultWorkerFactory,
+): Promise<PreparedBookImport> {
   if (!file.name.toLowerCase().endsWith('.txt')) {
     throw new Error('请选择扩展名为 .txt 的小说文件。')
   }
 
   onStage('reading')
-  const buffer = await file.arrayBuffer()
-  const parsed = await parseInWorker(buffer, onStage)
-
-  onStage('saving')
-  const saveStartedAt = performance.now()
-  const book = await persistParsedBook(file, parsed)
-  const saveMs = performance.now() - saveStartedAt
-  onStage('complete')
+  let buffer: ArrayBuffer
+  try {
+    buffer = await file.arrayBuffer()
+  } catch (error) {
+    throw new Error(getImportErrorMessage(error))
+  }
+  const parsed = await parseBookBufferInWorker(buffer, onStage, createWorker)
+  const suggestedTitle = inferBookTitle(file.name)
+  const duplicateBook = await findDuplicateBook(suggestedTitle, parsed, repository)
   const warnings: ImportWarning[] = [...parsed.cleaningWarnings, ...parsed.warnings]
+  onStage('reviewing')
   return {
-    book,
+    fileName: file.name,
+    suggestedTitle,
+    parsed,
     warnings,
+    duplicateBook,
     summary: {
       encoding: parsed.encoding,
-      mainChapterCount: book.mainChapterCount,
-      extraChapterCount: book.extraChapterCount,
-      totalCharacterCount: book.totalCharacterCount,
-      appliedCleaningRuleCount: parsed.appliedCleaningRuleIds.length,
-      cleaningRuleHits: parsed.cleaningRuleHits,
+      mainChapterCount: parsed.chapters.filter(({ section }) => section === 'main').length,
+      extraChapterCount: parsed.chapters.filter(({ section }) => section === 'extra').length,
+      totalChapters: parsed.chapters.length,
+      totalCharacterCount: parsed.totalCharacterCount,
       warningCount: warnings.length,
-      canonicalEndingDetected: parsed.canonicalEndingDetected,
-      timings: { ...parsed.timings, saveMs },
+      timings: parsed.timings,
     },
   }
 }
 
-export async function importBook(
-  file: File,
-  onStage: (stage: ImportStage) => void = () => undefined,
+export async function confirmBookImport(
+  prepared: PreparedBookImport,
+  options: ConfirmBookImportOptions,
+  onStage: (stage: ImportStage) => void,
+  repository: ReaderRepository = readerRepository,
+  now = new Date(),
 ): Promise<Book> {
-  return (await importBookFile(file, onStage)).book
+  const title = options.title.trim()
+  if (!title) throw new Error('请输入书名后再确认导入。')
+  if (prepared.duplicateBook && !options.duplicateAction) {
+    throw new Error('这本小说已经存在，请选择覆盖、保留两本或取消。')
+  }
+
+  const overwrite = prepared.duplicateBook && options.duplicateAction === 'overwrite'
+  const bookId = overwrite ? prepared.duplicateBook!.id : crypto.randomUUID()
+  const chapters: Chapter[] = prepared.parsed.chapters.map((chapter) => ({
+    ...chapter,
+    id: createChapterId(bookId, chapter.section, chapter.order),
+    bookId,
+  }))
+  const firstChapter = [...chapters].sort((left, right) => left.order - right.order)[0]
+  if (!firstChapter) throw new Error('文件中没有可保存的章节。')
+
+  const timestamp = now.toISOString()
+  const previous = overwrite ? prepared.duplicateBook : undefined
+  const book: Book = {
+    id: bookId,
+    title,
+    author: previous?.author,
+    description: previous?.description,
+    sourceFileName: prepared.fileName,
+    sourceEncoding: prepared.parsed.encoding,
+    sourceHash: prepared.parsed.contentHash,
+    importedAt: previous?.importedAt ?? timestamp,
+    updatedAt: timestamp,
+    totalChapters: chapters.length,
+    mainChapterCount: prepared.summary.mainChapterCount,
+    extraChapterCount: prepared.summary.extraChapterCount,
+    totalCharacterCount: prepared.parsed.totalCharacterCount,
+    wordCount: prepared.parsed.totalCharacterCount,
+    mainCharacterCount: prepared.parsed.mainCharacterCount,
+    extraCharacterCount: prepared.parsed.extraCharacterCount,
+    parserVersion: PARSER_VERSION,
+    cleanerVersion: CLEANER_VERSION,
+  }
+  const initialProgress: ReadingProgress = {
+    bookId,
+    chapterId: firstChapter.id,
+    paragraphIndex: 0,
+    characterOffset: 0,
+    chapterProgress: 0,
+    globalProgress: 0,
+    updatedAt: timestamp,
+  }
+
+  onStage('saving')
+  if (overwrite) {
+    await repository.replaceBook(bookId, book, chapters, initialProgress)
+  } else {
+    await repository.addBook(book, chapters, initialProgress)
+  }
+  onStage('complete')
+  return book
 }

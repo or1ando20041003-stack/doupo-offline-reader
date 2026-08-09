@@ -2,7 +2,7 @@ import Dexie, { type EntityTable } from 'dexie'
 import type { Book, Chapter, ReaderSettings, ReadingProgress } from '../domain/models'
 import { upgradeToMultiBookSchema } from './migrations'
 
-export const DATABASE_VERSION = 2
+export const DATABASE_VERSION = 3
 
 export class ReaderDatabase extends Dexie {
   books!: EntityTable<Book, 'id'>
@@ -20,12 +20,19 @@ export class ReaderDatabase extends Dexie {
       settings: '&id',
     })
 
-    this.version(DATABASE_VERSION).stores({
+    this.version(2).stores({
       books: '&id, importedAt, updatedAt, lastReadAt',
       chapters: '&id, bookId, [bookId+order], [bookId+section], [bookId+chapterNumber]',
       progress: '&bookId, chapterId, updatedAt',
       settings: '&id',
     }).upgrade(upgradeToMultiBookSchema)
+
+    this.version(DATABASE_VERSION).stores({
+      books: '&id, importedAt, updatedAt, lastReadAt, sourceHash',
+      chapters: '&id, bookId, [bookId+order], [bookId+section], [bookId+chapterNumber]',
+      progress: '&bookId, chapterId, updatedAt',
+      settings: '&id',
+    })
   }
 }
 

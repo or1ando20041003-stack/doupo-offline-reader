@@ -7,8 +7,10 @@ export interface Book {
   id: string
   title: string
   author?: string
+  description?: string
   sourceFileName: string
   sourceEncoding: SourceEncoding
+  sourceHash?: string
   importedAt: string
   updatedAt: string
   lastReadAt?: string
@@ -16,6 +18,7 @@ export interface Book {
   mainChapterCount: number
   extraChapterCount: number
   totalCharacterCount: number
+  wordCount?: number
   mainCharacterCount: number
   extraCharacterCount: number
   parserVersion: string

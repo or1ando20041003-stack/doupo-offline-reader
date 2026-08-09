@@ -133,6 +133,40 @@ describe('ReaderRepository multi-book storage', () => {
     expect(await repository.getProgress(bookB.id)).toEqual(makeProgress(bookB.id, chapterB.id))
   })
 
+  it('atomically replaces one book without changing another book', async () => {
+    const bookA = makeBook('book-a')
+    const bookB = makeBook('book-b')
+    const chapterA = makeChapter(bookA.id)
+    const chapterB = makeChapter(bookB.id)
+    await repository.addBook(bookA, [chapterA], makeProgress(bookA.id, chapterA.id, 3))
+    await repository.addBook(bookB, [chapterB], makeProgress(bookB.id, chapterB.id, 2))
+
+    const replacementBook = {
+      ...bookA,
+      title: '测试书 A（新版）',
+      sourceHash: 'new-file-hash',
+      wordCount: 6,
+      totalCharacterCount: 6,
+      mainCharacterCount: 6,
+    }
+    const replacementChapter = {
+      ...chapterA,
+      title: '第一章 新正文',
+      paragraphs: ['新版正文内容'],
+      characterCount: 6,
+    }
+    const resetProgress = makeProgress(bookA.id, replacementChapter.id)
+
+    await repository.replaceBook(bookA.id, replacementBook, [replacementChapter], resetProgress)
+
+    expect(await repository.getBookById(bookA.id)).toEqual(replacementBook)
+    expect(await repository.getChapters(bookA.id)).toEqual([replacementChapter])
+    expect(await repository.getProgress(bookA.id)).toEqual(resetProgress)
+    expect(await repository.getBookById(bookB.id)).toEqual(bookB)
+    expect(await repository.getChapters(bookB.id)).toEqual([chapterB])
+    expect(await repository.getProgress(bookB.id)).toEqual(makeProgress(bookB.id, chapterB.id, 2))
+  })
+
   it('keeps reader settings global and merges older partial records', async () => {
     expect(await repository.getSettings()).toMatchObject({ fontSize: 19, theme: 'paper', readingMode: 'scroll' })
     await database.settings.put({ id: 'reader-settings', theme: 'dark' } as never)

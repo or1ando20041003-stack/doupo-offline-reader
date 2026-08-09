@@ -38,7 +38,7 @@ describe('BookshelfScreen', () => {
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2026-08-09T01:00:20.000Z'))
     const html = renderToStaticMarkup(
-      <BookshelfScreen entries={[entry('a', '斗破苍穹'), entry('b', '凡人修仙传')]} stage={null} error={null} {...callbacks} />,
+      <BookshelfScreen entries={[entry('a', '斗破苍穹'), entry('b', '凡人修仙传')]} importDisabled={false} {...callbacks} />,
     )
     expect(html).toContain('斗破苍穹')
     expect(html).toContain('凡人修仙传')
@@ -50,7 +50,7 @@ describe('BookshelfScreen', () => {
 
   it('renders EmptyBookshelf instead of an error for an empty database', () => {
     const html = renderToStaticMarkup(
-      <BookshelfScreen entries={[]} stage={null} error={null} {...callbacks} />,
+      <BookshelfScreen entries={[]} importDisabled={false} {...callbacks} />,
     )
     expect(html).toContain('你的书架还是空的')
     expect(html).toContain('导入 TXT 开始阅读')

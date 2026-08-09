@@ -11,11 +11,17 @@ function post(response: WorkerImportResponse): void {
   workerScope.postMessage(response)
 }
 
-workerScope.onmessage = (event: MessageEvent<WorkerImportRequest>) => {
+async function sha256(buffer: ArrayBuffer): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', buffer)
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
+}
+
+async function handleImport(event: MessageEvent<WorkerImportRequest>): Promise<void> {
   if (event.data.type !== 'import') return
 
   try {
     const totalStartedAt = performance.now()
+    const contentHash = await sha256(event.data.payload.buffer)
     post({ type: 'progress', stage: 'decoding' })
     const decodeStartedAt = performance.now()
     const decoded = decodeText(event.data.payload.buffer)
@@ -43,6 +49,7 @@ workerScope.onmessage = (event: MessageEvent<WorkerImportRequest>) => {
     post({
       type: 'result',
       payload: {
+        contentHash,
         encoding: decoded.encoding,
         chapters: parsed.chapters,
         warnings: parsed.warnings,
@@ -66,6 +73,10 @@ workerScope.onmessage = (event: MessageEvent<WorkerImportRequest>) => {
     const details = error instanceof Error ? error.stack : String(error)
     post({ type: 'error', message, details })
   }
+}
+
+workerScope.onmessage = (event: MessageEvent<WorkerImportRequest>) => {
+  void handleImport(event)
 }
 
 export {}

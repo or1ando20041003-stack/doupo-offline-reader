@@ -1,12 +1,19 @@
 import 'fake-indexeddb/auto'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { WorkerParsedPayload } from '../book-processing/types'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import type { ImportStage, WorkerImportResponse, WorkerParsedPayload } from '../book-processing/types'
 import { ReaderDatabase } from '../db/readerDatabase'
 import { ReaderRepository } from '../db/repositories'
 import { loadBookshelf } from './bookshelf'
-import { persistParsedBook } from './importBook'
+import {
+  confirmBookImport,
+  getImportErrorMessage,
+  inferBookTitle,
+  parseBookBufferInWorker,
+  prepareBookImport,
+} from './importBook'
 
 const parsed: WorkerParsedPayload = {
+  contentHash: 'abc123',
   encoding: 'utf-8',
   chapters: [{
     order: 0,
@@ -29,7 +36,36 @@ const parsed: WorkerParsedPayload = {
   extraCharacterCount: 0,
 }
 
-describe('persistParsedBook', () => {
+function testFile(name = '测试小说 完整版.TXT'): File {
+  const bytes = new TextEncoder().encode('第一章\n测试正文')
+  return {
+    name,
+    arrayBuffer: async () => bytes.buffer.slice(0),
+  } as File
+}
+
+function fakeWorker(result: WorkerImportResponse = { type: 'result', payload: parsed }) {
+  return () => {
+    const worker = {
+      onmessage: null as ((event: MessageEvent<WorkerImportResponse>) => void) | null,
+      onerror: null as ((event: ErrorEvent) => void) | null,
+      postMessage: vi.fn(() => {
+        queueMicrotask(() => {
+          if (result.type === 'result') {
+            for (const stage of ['decoding', 'cleaning', 'parsing'] as const) {
+              worker.onmessage?.({ data: { type: 'progress', stage } } as MessageEvent<WorkerImportResponse>)
+            }
+          }
+          worker.onmessage?.({ data: result } as MessageEvent<WorkerImportResponse>)
+        })
+      }),
+      terminate: vi.fn(),
+    }
+    return worker
+  }
+}
+
+describe('two-phase book import', () => {
   let database: ReaderDatabase
   let repository: ReaderRepository
 
@@ -42,18 +78,111 @@ describe('persistParsedBook', () => {
     await database.delete()
   })
 
-  it('generates a fresh bookId, unique chapter IDs, and initial progress per import', async () => {
-    const first = await persistParsedBook({ name: '第一本.txt' }, parsed, repository, new Date('2026-08-09T00:00:00.000Z'))
-    const second = await persistParsedBook({ name: '第二本.txt' }, parsed, repository, new Date('2026-08-09T01:00:00.000Z'))
-    const firstChapter = (await repository.getChapters(first.id))[0]!
-    const secondChapter = (await repository.getChapters(second.id))[0]!
+  it('parses first, writes nothing before confirmation, then imports successfully', async () => {
+    const stages: ImportStage[] = []
+    const prepared = await prepareBookImport(testFile(), (stage) => stages.push(stage), repository, fakeWorker())
+    expect(await repository.getBooks()).toEqual([])
+    expect(prepared.suggestedTitle).toBe('测试小说')
+    expect(prepared.summary).toMatchObject({ totalChapters: 1, totalCharacterCount: 4 })
 
-    expect(first.id).not.toBe(second.id)
-    expect(firstChapter.id).not.toBe(secondChapter.id)
-    expect(firstChapter.chapterNumber).toBe(1)
-    expect(secondChapter.chapterNumber).toBe(1)
-    expect(await repository.getProgress(first.id)).toMatchObject({ bookId: first.id, chapterId: firstChapter.id })
-    expect(await repository.getProgress(second.id)).toMatchObject({ bookId: second.id, chapterId: secondChapter.id })
-    expect((await loadBookshelf(repository)).map(({ book }) => book.title)).toEqual(['第二本', '第一本'])
+    const book = await confirmBookImport(
+      prepared,
+      { title: prepared.suggestedTitle },
+      (stage) => stages.push(stage),
+      repository,
+      new Date('2026-08-09T01:00:00.000Z'),
+    )
+    expect(book).toMatchObject({ title: '测试小说', sourceHash: 'abc123', wordCount: 4 })
+    expect(await repository.getBookById(book.id)).toEqual(book)
+    expect((await loadBookshelf(repository))[0]?.book.title).toBe('测试小说')
+    expect(stages).toEqual(['reading', 'decoding', 'cleaning', 'parsing', 'reviewing', 'saving', 'complete'])
+  })
+
+  it('keeps parsing off the calling stack by using the worker protocol', async () => {
+    let settled = false
+    const promise = parseBookBufferInWorker(new ArrayBuffer(20 * 1024 * 1024), () => undefined, fakeWorker())
+      .then((payload) => { settled = true; return payload })
+    expect(settled).toBe(false)
+    expect((await promise).contentHash).toBe('abc123')
+  })
+
+  it('cancels without creating any database records', async () => {
+    await prepareBookImport(testFile(), () => undefined, repository, fakeWorker())
+    expect(await repository.getBooks()).toEqual([])
+    expect(await database.chapters.count()).toBe(0)
+    expect(await database.progress.count()).toBe(0)
+  })
+
+  it('detects a duplicate by hash and never overwrites by default', async () => {
+    const firstDraft = await prepareBookImport(testFile('斗破苍穹.txt'), () => undefined, repository, fakeWorker())
+    const first = await confirmBookImport(firstDraft, { title: '斗破苍穹' }, () => undefined, repository)
+    const duplicateDraft = await prepareBookImport(testFile('斗破苍穹 全本.txt'), () => undefined, repository, fakeWorker())
+
+    expect(duplicateDraft.duplicateBook?.id).toBe(first.id)
+    await expect(confirmBookImport(duplicateDraft, { title: '斗破苍穹' }, () => undefined, repository))
+      .rejects.toThrow('请选择覆盖、保留两本或取消')
+    expect(await repository.getBooks()).toHaveLength(1)
+
+    await confirmBookImport(duplicateDraft, { title: '斗破苍穹', duplicateAction: 'keep' }, () => undefined, repository)
+    expect(await repository.getBooks()).toHaveLength(2)
+  })
+
+  it('overwrites only after explicit confirmation and resets that book progress', async () => {
+    const firstDraft = await prepareBookImport(testFile('斗破苍穹.txt'), () => undefined, repository, fakeWorker())
+    const first = await confirmBookImport(
+      firstDraft,
+      { title: '斗破苍穹' },
+      () => undefined,
+      repository,
+      new Date('2026-08-01T00:00:00.000Z'),
+    )
+    const firstProgress = await repository.getProgress(first.id)
+    await repository.saveProgress({ ...firstProgress!, characterOffset: 3, updatedAt: '2026-08-08T00:00:00.000Z' })
+
+    const duplicateDraft = await prepareBookImport(testFile('斗破苍穹全集.txt'), () => undefined, repository, fakeWorker())
+    const overwritten = await confirmBookImport(
+      duplicateDraft,
+      { title: '斗破苍穹·校订版', duplicateAction: 'overwrite' },
+      () => undefined,
+      repository,
+      new Date('2026-08-09T00:00:00.000Z'),
+    )
+
+    expect(overwritten.id).toBe(first.id)
+    expect(overwritten.importedAt).toBe(first.importedAt)
+    expect(overwritten.title).toBe('斗破苍穹·校订版')
+    expect((await repository.getBooks())).toHaveLength(1)
+    expect(await repository.getProgress(first.id)).toMatchObject({ characterOffset: 0, globalProgress: 0 })
+  })
+
+  it('recovers from worker and unreadable-file failures with understandable messages', async () => {
+    const workerFailure = prepareBookImport(
+      testFile(),
+      () => undefined,
+      repository,
+      fakeWorker({ type: 'error', message: '文件为空或没有可保存的正文。' }),
+    )
+    await expect(workerFailure).rejects.toThrow('文件为空')
+
+    const brokenFile = {
+      name: '损坏.txt',
+      arrayBuffer: async () => { throw new DOMException('read failed', 'NotReadableError') },
+    } as unknown as File
+    await expect(prepareBookImport(brokenFile, () => undefined, repository, fakeWorker()))
+      .rejects.toThrow('无法读取这个 TXT 文件')
+    expect(getImportErrorMessage(new SyntaxError('Unexpected token'))).not.toContain('Unexpected token')
+    expect(await repository.getBooks()).toEqual([])
+  })
+})
+
+describe('inferBookTitle', () => {
+  it.each([
+    ['斗破苍穹.txt', '斗破苍穹'],
+    ['斗破苍穹 完整版.TXT', '斗破苍穹'],
+    ['凡人修仙传（全本）.txt', '凡人修仙传'],
+    ['诡秘之主-全集.txt', '诡秘之主'],
+    ['全本高手.txt', '全本高手'],
+  ])('infers %s as %s', (fileName, title) => {
+    expect(inferBookTitle(fileName)).toBe(title)
   })
 })

@@ -64,6 +64,7 @@ export type ImportStage =
   | 'decoding'
   | 'cleaning'
   | 'parsing'
+  | 'reviewing'
   | 'saving'
   | 'complete'
   | 'error'
@@ -76,6 +77,7 @@ export interface WorkerImportRequest {
 }
 
 export interface WorkerParsedPayload {
+  contentHash: string
   encoding: SourceEncoding
   chapters: ParsedChapter[]
   warnings: ParseWarning[]

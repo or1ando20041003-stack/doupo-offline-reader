@@ -27,6 +27,10 @@ export class ReaderRepository {
     return this.database.books.get(bookId)
   }
 
+  async getBookBySourceHash(sourceHash: string): Promise<Book | undefined> {
+    return this.database.books.where('sourceHash').equals(sourceHash).first()
+  }
+
   async saveChapters(bookId: string, chapters: readonly Chapter[]): Promise<void> {
     if (chapters.some((chapter) => chapter.bookId !== bookId)) {
       throw new Error('章节所属书籍与保存目标不一致。')
@@ -100,6 +104,31 @@ export class ReaderRepository {
         await this.database.books.add(book)
         await this.database.chapters.bulkAdd([...chapters])
         await this.database.progress.add(initialProgress)
+      },
+    )
+  }
+
+  async replaceBook(
+    bookId: string,
+    book: Book,
+    chapters: readonly Chapter[],
+    initialProgress: ReadingProgress,
+  ): Promise<void> {
+    if (book.id !== bookId || chapters.length === 0 || chapters.some((chapter) => chapter.bookId !== bookId)) {
+      throw new Error('覆盖书籍的数据归属不一致。')
+    }
+    if (initialProgress.bookId !== bookId || !chapters.some(({ id }) => id === initialProgress.chapterId)) {
+      throw new Error('覆盖书籍的初始进度无效。')
+    }
+    await this.database.transaction(
+      'rw',
+      [this.database.books, this.database.chapters, this.database.progress],
+      async () => {
+        await this.database.chapters.where('bookId').equals(bookId).delete()
+        await this.database.progress.delete(bookId)
+        await this.database.books.put(book)
+        await this.database.chapters.bulkPut([...chapters])
+        await this.database.progress.put(initialProgress)
       },
     )
   }

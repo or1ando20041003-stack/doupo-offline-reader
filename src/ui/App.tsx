@@ -3,8 +3,11 @@ import type { ImportStage } from '../book-processing/types'
 import { readerRepository } from '../db/repositories'
 import type { BookshelfEntry, ReaderBookState } from '../services/bookshelf'
 import { loadBookshelf, loadReaderBook } from '../services/bookshelf'
-import { importBook } from '../services/importBook'
+import type { DuplicateAction, PreparedBookImport } from '../services/importBook'
+import { confirmBookImport, getImportErrorMessage, prepareBookImport } from '../services/importBook'
 import { BookshelfScreen } from './BookshelfScreen'
+import { ImportConfirmation } from './ImportConfirmation'
+import { ImportProgress } from './ImportProgress'
 import { ReaderScreen } from './ReaderScreen'
 
 type AppState =
@@ -19,8 +22,10 @@ export function createReaderState(bookId: string, reader: ReaderBookState): AppS
 
 export function App() {
   const [state, setState] = useState<AppState>({ kind: 'loading' })
-  const [stage, setStage] = useState<ImportStage | null>(null)
-  const [importError, setImportError] = useState<string | null>(null)
+  const [importTask, setImportTask] = useState<{ fileName: string; stage: ImportStage; error?: string }>()
+  const [preparedImport, setPreparedImport] = useState<PreparedBookImport>()
+  const [confirmError, setConfirmError] = useState<string>()
+  const [savingImport, setSavingImport] = useState(false)
 
   const showBookshelf = useCallback(async () => {
     const entries = await loadBookshelf()
@@ -39,21 +44,51 @@ export function App() {
   }, [])
 
   const handleFile = useCallback(async (file: File) => {
-    setImportError(null)
+    setPreparedImport(undefined)
+    setConfirmError(undefined)
+    const updateStage = (stage: ImportStage) => setImportTask({ fileName: file.name, stage })
     try {
-      await importBook(file, setStage)
-      await showBookshelf()
+      const prepared = await prepareBookImport(file, updateStage)
+      setPreparedImport(prepared)
     } catch (error) {
       console.error('Import failed:', error)
-      setStage('error')
-      setImportError(error instanceof Error ? error.message : '导入失败，请重试。')
+      setImportTask({ fileName: file.name, stage: 'error', error: getImportErrorMessage(error) })
     }
-  }, [showBookshelf])
+  }, [])
+
+  const finishImport = useCallback(async (title: string, duplicateAction?: DuplicateAction) => {
+    if (!preparedImport) return
+    setSavingImport(true)
+    setConfirmError(undefined)
+    try {
+      await confirmBookImport(
+        preparedImport,
+        { title, duplicateAction },
+        (stage) => setImportTask({ fileName: preparedImport.fileName, stage }),
+      )
+      setPreparedImport(undefined)
+      setImportTask(undefined)
+      await showBookshelf()
+    } catch (error) {
+      console.error('Saving imported book failed:', error)
+      setConfirmError(error instanceof Error && error.message.startsWith('请输入')
+        ? error.message
+        : '无法保存到本地书架，请检查设备存储空间后重试。')
+    } finally {
+      setSavingImport(false)
+    }
+  }, [preparedImport, showBookshelf])
+
+  const cancelImport = useCallback(() => {
+    setPreparedImport(undefined)
+    setImportTask(undefined)
+    setConfirmError(undefined)
+    setSavingImport(false)
+  }, [])
 
   const openBook = useCallback(async (bookId: string) => {
     try {
-      setStage(null)
-      setImportError(null)
+      cancelImport()
       const reader = await loadReaderBook(bookId)
       document.documentElement.dataset.readerTheme = reader.settings.theme
       setState(createReaderState(bookId, reader))
@@ -61,7 +96,7 @@ export function App() {
       console.error('Opening book failed:', error)
       setState({ kind: 'error', message: error instanceof Error ? error.message : '无法打开这本小说。' })
     }
-  }, [])
+  }, [cancelImport])
 
   const deleteBook = useCallback(async (bookId: string) => {
     await readerRepository.deleteBook(bookId)
@@ -75,16 +110,32 @@ export function App() {
     return <main className="app-shell status-screen error-text">{state.message}</main>
   }
   if (state.kind === 'bookshelf') {
-    return (
+    return <>
       <BookshelfScreen
         entries={state.entries}
-        stage={stage}
-        error={importError}
+        importDisabled={Boolean(importTask || preparedImport)}
         onFile={handleFile}
         onOpen={(bookId) => { void openBook(bookId) }}
         onDelete={deleteBook}
       />
-    )
+      {importTask && (!preparedImport || savingImport) && (
+        <ImportProgress
+          fileName={importTask.fileName}
+          stage={importTask.stage}
+          error={importTask.error}
+          onDismiss={cancelImport}
+        />
+      )}
+      {preparedImport && !savingImport && (
+        <ImportConfirmation
+          prepared={preparedImport}
+          saving={savingImport}
+          error={confirmError}
+          onCancel={cancelImport}
+          onConfirm={(title, duplicateAction) => { void finishImport(title, duplicateAction) }}
+        />
+      )}
+    </>
   }
   return (
     <ReaderScreen

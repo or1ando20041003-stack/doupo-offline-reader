@@ -1,6 +1,6 @@
 # 斗破苍穹 Offline Reader
 
-一个 Android 手机优先、同时支持 Windows Chrome/Edge 的私人离线中文小说 PWA。阶段 4.2 已加入多小说书架首页；ReaderScreen 支持断点续读、目录、滚动/左右翻页、文本锚点、设置与四套主题。没有服务器、账号、云同步、网络 API 或在线正文，小说不会离开当前设备。
+一个 Android 手机优先、同时支持 Windows Chrome/Edge 的私人离线中文小说 PWA。阶段 4.3 已完成多小说导入确认、重复检测和书籍管理；ReaderScreen 支持断点续读、目录、滚动/左右翻页、文本锚点、设置与四套主题。没有服务器、账号、云同步、网络 API 或在线正文，小说不会离开当前设备。
 
 ## 技术栈与目录
 
@@ -65,11 +65,19 @@ npm run verify:deploy
 
 ## 多书数据库架构（阶段 4.1）
 
-Dexie 数据库版本为 v2。每个 `Book` 使用 UUID；每个 `Chapter` 和 `ReadingProgress` 都绑定 `bookId`，章节主键由 `bookId + section + order` 组成，`chapterNumber` 只用于显示。TXT 导入在单个 transaction 中追加 Book、Chapters 和初始 Progress，不会清空其他小说。
+Dexie 数据库版本为 v3。每个 `Book` 使用 UUID；每个 `Chapter` 和 `ReadingProgress` 都绑定 `bookId`，章节主键由 `bookId + section + order` 组成，`chapterNumber` 只用于显示。TXT 导入在单个 transaction 中追加 Book、Chapters 和初始 Progress，不会清空其他小说。v3 为 Book 增加可选的 `sourceHash`、`wordCount` 和 `description`，旧记录无需重新导入。
 
 从 v1 打开时，Dexie 在原地 transaction 中保留旧 Book、正文和 Progress，为旧记录补齐多书元数据与缺失的 `bookId`。迁移失败会整体回滚，不删除 store、不重新解析 TXT。`ReaderSettings` 目前仍是全局共享设置。
 
 Repository 提供 `getBooks()`、`getBookById(bookId)`、按 `bookId` 的章节/进度查询，以及只级联删除指定小说的 `deleteBook(bookId)`。
+
+## 导入与书籍管理（阶段 4.3）
+
+导入分成“后台解析”和“用户确认”两段。选择 TXT 后，界面依次显示读取文件、编码识别、文本清洗、章节解析和保存数据；文件读取后的 SHA-256、解码、清洗与章节解析全部在 Web Worker 中完成。解析完成只显示确认界面，不写数据库；用户可以修改书名，核对章节数、正文字符数和编码，再确认导入或重新选择。
+
+书名优先取文件名，去掉大小写无关的 `.txt`，并只清理末尾的“完整版”“全本”“全集”及常见括号/分隔符。重复导入先按文件 SHA-256 检测；为兼容没有 hash 的旧书，再按规范化书名、章节数和正文字符数匹配。命中后默认不覆盖，必须明确选择“覆盖原书”“保留两本”或“取消”。覆盖使用原子 transaction 替换所选书的章节并重置该书进度，不影响其他书。
+
+书卡显示章节数、字数、导入时间、最后阅读章节、阅读百分比和最后阅读时间。删除确认会再次显示书名、章节数、当前阅读章节和进度；只删除应用数据库中的所选书、章节和进度，不删除手机原 TXT。
 
 ## BookshelfScreen 架构（阶段 4.2）
 
@@ -165,4 +173,4 @@ Workbox 只预缓存 app shell，小说正文只在 IndexedDB。清除站点数�
 
 ## 当前产品边界
 
-阶段 4.2 已完成多小说书架、书卡、导入留在书架、删除确认与返回书架。搜索、分类、标签、封面、账号和云同步仍未加入；产品也不包含书签、书城、网络正文、TTS 或复杂翻书动画。浏览器删除站点数据后无法恢复书库；不同 Android WebView/厂商浏览器仍建议用目标设备执行一次安装与长时间阅读测试。
+阶段 4.3 已完成多小说书架、两阶段 TXT 导入、导入进度、书名编辑、重复检测、书籍统计和详细删除确认。搜索、分类、标签、封面、账号和云同步仍未加入；产品也不包含书签、书城、网络正文、TTS 或复杂翻书动画。浏览器删除站点数据后无法恢复书库；不同 Android WebView/厂商浏览器仍建议用目标设备执行一次安装与长时间阅读测试。
