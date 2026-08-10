@@ -1,6 +1,7 @@
 import { classifySections, defaultConclusionMatcher } from './classifySections'
 import { parseChapterNumber } from './chineseNumber'
 import type { ParsedChapter, ParseResult, ParseWarning } from './types'
+import type { ProcessingProfile } from './processingProfile'
 
 export const MAX_CHAPTER_TITLE_LENGTH = 60
 
@@ -60,7 +61,11 @@ function buildParsedChapter(
   }
 }
 
-function findAcceptedHeadings(lines: readonly string[], warnings: ParseWarning[]): HeadingSelection {
+function findAcceptedHeadings(
+  lines: readonly string[],
+  warnings: ParseWarning[],
+  profile: ProcessingProfile,
+): HeadingSelection {
   const candidates: HeadingEntry[] = []
   let suspiciousHeadingCount = 0
   lines.forEach((line, index) => {
@@ -78,12 +83,12 @@ function findAcceptedHeadings(lines: readonly string[], warnings: ParseWarning[]
     })
   }
 
-  const canonicalCandidateIndex = candidates.findIndex((entry) =>
+  const canonicalCandidateIndex = profile === 'doupoLegacy' ? candidates.findIndex((entry) =>
     defaultConclusionMatcher({
       ...buildParsedChapter(0, entry.heading, []),
       chapterNumber: entry.heading.chapterNumber,
     }),
-  )
+  ) : -1
   const accepted: HeadingEntry[] = []
   let lastMainNumber: number | null = null
   let ignoredCount = 0
@@ -95,7 +100,7 @@ function findAcceptedHeadings(lines: readonly string[], warnings: ParseWarning[]
     if (entry.heading.numeralNormalized) normalizedNumeralCount += 1
     const isExtraCandidate = canonicalCandidateIndex >= 0 && candidateIndex > canonicalCandidateIndex
     const number = entry.heading.chapterNumber
-    if (!isExtraCandidate && lastMainNumber !== null && number !== null) {
+    if (profile === 'doupoLegacy' && !isExtraCandidate && lastMainNumber !== null && number !== null) {
       if (number <= lastMainNumber) {
         ignoredCount += 1
         ignoredLineIndexes.add(entry.index)
@@ -151,7 +156,8 @@ function applyCharacterPositions(chapters: readonly ParsedChapter[]): ParsedChap
   })
 }
 
-export function parseChapters(text: string): ParseResult {
+export function parseChapters(text: string, options: { profile?: ProcessingProfile } = {}): ParseResult {
+  const profile = options.profile ?? 'generic'
   if (!text.trim()) {
     return {
       chapters: [],
@@ -163,7 +169,7 @@ export function parseChapters(text: string): ParseResult {
 
   const lines = text.split('\n')
   const warnings: ParseWarning[] = []
-  const selection = findAcceptedHeadings(lines, warnings)
+  const selection = findAcceptedHeadings(lines, warnings, profile)
   const headings = selection.accepted
   const contentLines = lines.map((line, index) =>
     selection.ignoredLineIndexes.has(index) ? '' : line,
@@ -185,7 +191,11 @@ export function parseChapters(text: string): ParseResult {
       chapters: [fallback],
       warnings: [
         { code: 'NO_CHAPTER_HEADINGS', message: '未识别到章节标题，已将内容作为单章“全文”导入。', priority: 'high' },
-        { code: 'CANONICAL_ENDING_NOT_CONFIRMED', message: '未找到可靠的大结局标志，内容暂归正文。', priority: 'high' },
+        ...(profile === 'doupoLegacy' ? [{
+          code: 'CANONICAL_ENDING_NOT_CONFIRMED' as const,
+          message: '未找到可靠的大结局标志，内容暂归正文。',
+          priority: 'high' as const,
+        }] : []),
       ],
       canonicalEndingDetected: false,
       conclusionOrder: null,
@@ -238,7 +248,7 @@ export function parseChapters(text: string): ParseResult {
     })
   }
 
-  const classified = classifySections(chapters)
+  const classified = classifySections(chapters, profile)
   return {
     chapters: applyCharacterPositions(classified.chapters),
     warnings: [...warnings, ...classified.warnings],

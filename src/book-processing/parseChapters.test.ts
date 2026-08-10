@@ -48,7 +48,7 @@ describe('chapter parsing', () => {
   })
 
   it('recognizes the confirmed 1624 ending and puts only following chapters in extra', () => {
-    const result = parseChapters(ARTIFICIAL_NOVEL)
+    const result = parseChapters(ARTIFICIAL_NOVEL, { profile: 'doupoLegacy' })
     expect(result.canonicalEndingDetected).toBe(true)
     expect(result.chapters).toHaveLength(4)
     expect(result.chapters.map((item) => item.section)).toEqual(['main', 'main', 'main', 'extra'])
@@ -57,7 +57,7 @@ describe('chapter parsing', () => {
   })
 
   it('keeps natural lines as paragraphs and records global/section character offsets', () => {
-    const result = parseChapters(ARTIFICIAL_NOVEL)
+    const result = parseChapters(ARTIFICIAL_NOVEL, { profile: 'doupoLegacy' })
     expect(result.chapters[0]?.paragraphs).toEqual(['这是人工编写的第一段。', '这是第二段。'])
     expect(result.chapters[0]?.cumulativeCharacterStart).toBe(0)
     expect(result.chapters[1]?.cumulativeCharacterStart).toBe(result.chapters[0]?.characterCount)
@@ -90,25 +90,30 @@ describe('chapter parsing', () => {
     expect(result.chapters).toHaveLength(1)
     expect(result.chapters[0]?.title).toBe('全文')
     expect(result.warnings.map((warning) => warning.code)).toContain('NO_CHAPTER_HEADINGS')
+    expect(result.warnings.map((warning) => warning.code)).not.toContain('CANONICAL_ENDING_NOT_CONFIRMED')
   })
 
-  it('ignores repeated main numbers and reports them instead of creating duplicate chapters', () => {
+  it('keeps repeated chapter numbers for generic books and uses order for navigation', () => {
     const result = parseChapters('第一章 相遇\n甲。\n第一章 重复标题\n乙。\n第二章 继续\n丙。')
-    expect(result.chapters.map((item) => item.chapterNumber)).toEqual([1, 2])
-    expect(result.warnings.map((warning) => warning.code)).toContain('NON_MONOTONIC_HEADING_IGNORED')
+    expect(result.chapters.map((item) => item.chapterNumber)).toEqual([1, 1, 2])
+    expect(result.warnings.map((warning) => warning.code)).not.toContain('NON_MONOTONIC_HEADING_IGNORED')
   })
 
   it('reports source gaps without inventing missing chapter numbers', () => {
-    const result = parseChapters('第一章 开始\n甲。\n第三章 跳号\n乙。')
+    const result = parseChapters('第一章 开始\n甲。\n第三章 跳号\n乙。', { profile: 'doupoLegacy' })
     expect(result.chapters.map((item) => item.chapterNumber)).toEqual([1, 3])
     expect(result.warnings).toContainEqual(expect.objectContaining({ code: 'MAIN_CHAPTER_GAP', count: 1 }))
   })
 
-  it('does not classify extras silently when the canonical ending is absent', () => {
+  it('does not leak Doupo ending warnings into generic books', () => {
     const classified = classifySections([chapter({ section: 'extra' })])
     expect(classified.chapters[0]?.section).toBe('main')
+    expect(classified.warnings).toEqual([])
+  })
+
+  it('keeps the legacy Doupo ending warning inside its explicit profile', () => {
+    const classified = classifySections([chapter({ section: 'extra' })], 'doupoLegacy')
     expect(classified.warnings[0]?.code).toBe('CANONICAL_ENDING_NOT_CONFIRMED')
-    expect(classified.warnings[0]?.priority).toBe('high')
   })
 
   it('requires both chapter 1624 and the confirmed ending title', () => {
@@ -116,6 +121,6 @@ describe('chapter parsing', () => {
       chapter({ chapterNumber: 1624, title: '第一千六百二十四章 普通标题' }),
       chapter({ order: 1, chapterNumber: 1, title: '第一章 附加内容' }),
     ]
-    expect(classifySections(chapters).canonicalEndingDetected).toBe(false)
+    expect(classifySections(chapters, 'doupoLegacy').canonicalEndingDetected).toBe(false)
   })
 })

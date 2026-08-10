@@ -1,6 +1,7 @@
 import type { SourceEncoding } from '../domain/models'
 import { cleanText, type CleanTextResult } from './cleanText'
 import { matchChapterHeading, parseChapters } from './parseChapters'
+import { selectProcessingProfile } from './processingProfile'
 import {
   CLEANER_VERSION,
   PARSER_VERSION,
@@ -119,6 +120,7 @@ export function inspectBookText(
   source: { sourceFileName: string; fileSize: number; encoding: SourceEncoding },
   processing?: { cleaned: CleanTextResult; parsed: ParseResult },
 ): BookInspectionReport {
+  const profile = selectProcessingProfile(source.sourceFileName)
   const lines = text.split(/\r\n|\n|\r/)
   const candidateEntries: Array<{ chapterNumber: number; lineNumber: number; summary: string }> = []
   const unparsedCandidateHeadings: CandidateHeadingIssue[] = []
@@ -135,28 +137,30 @@ export function inspectBookText(
     } else if (LOOSE_HEADING.test(line)) {
       unparsedCandidateHeadings.push({ lineNumber: index + 1, summary: summarizeLine(line) })
     }
-    if (/大结局|结束[，,、]?也(?:是)?开始/.test(line)) {
+    if (profile === 'doupoLegacy' && /大结局|结束[，,、]?也(?:是)?开始/.test(line)) {
       endingCandidates.push({ lineNumber: index + 1, summary: summarizeLine(line) })
     }
   })
 
-  const cleaned = processing?.cleaned ?? cleanText(text)
-  const parsed = processing?.parsed ?? parseChapters(cleaned.text)
+  const cleaned = processing?.cleaned ?? cleanText(text, { profile })
+  const parsed = processing?.parsed ?? parseChapters(cleaned.text, { profile })
   const mainChapters = parsed.chapters.filter((chapter) => chapter.section === 'main')
   const extraChapters = parsed.chapters.filter((chapter) => chapter.section === 'extra')
   const mainNumbers = mainChapters
     .map((chapter) => chapter.chapterNumber)
-    .filter((number): number is number => number !== null && number >= 1 && number <= 1624)
+    .filter((number): number is number => (
+      number !== null && number >= 1 && (profile !== 'doupoLegacy' || number <= 1624)
+    ))
   let outOfOrderMainChapters = 0
   for (let index = 1; index < mainNumbers.length; index += 1) {
     if ((mainNumbers[index] ?? 0) <= (mainNumbers[index - 1] ?? 0)) outOfOrderMainChapters += 1
   }
-  const endingIndex = parsed.chapters.findIndex(
+  const endingIndex = profile === 'doupoLegacy' ? parsed.chapters.findIndex(
     (chapter) => chapter.chapterNumber === 1624 && /(?:大结局|结束[，,、]?也(?:是)?开始)/.test(chapter.title),
-  )
+  ) : -1
   const candidateNumbers = candidateEntries.map((entry) => entry.chapterNumber)
   const candidateSequenceIssues: CandidateSequenceIssue[] = []
-  for (let index = 1; index < candidateEntries.length; index += 1) {
+  for (let index = 1; profile === 'doupoLegacy' && index < candidateEntries.length; index += 1) {
     const previous = candidateEntries[index - 1]
     const current = candidateEntries[index]
     if (previous && current && current.chapterNumber !== previous.chapterNumber + 1) {
@@ -186,7 +190,7 @@ export function inspectBookText(
       candidateChapterNumberRange: { min: candidateMin, max: candidateMax },
       duplicateCandidateNumbers: duplicateNumbers(candidateNumbers),
       missingCandidateNumbers:
-        candidateMin !== null && candidateMax !== null
+        profile === 'doupoLegacy' && candidateMin !== null && candidateMax !== null
           ? missingNumbers(candidateNumbers, candidateMin, Math.min(candidateMax, 1624))
           : [],
       candidateSequenceIssues: candidateSequenceIssues.slice(0, 250),
@@ -216,7 +220,7 @@ export function inspectBookText(
       total: parsed.chapters.length,
       main: mainChapters.length,
       extra: extraChapters.length,
-      missingMainNumbers: missingNumbers(mainNumbers, 1, 1624),
+      missingMainNumbers: profile === 'doupoLegacy' ? missingNumbers(mainNumbers, 1, 1624) : [],
       duplicateMainNumbers: duplicateNumbers(mainNumbers),
       unnumberedMainChapters: mainChapters.filter((chapter) => chapter.chapterNumber === null).length,
       outOfOrderMainChapters,

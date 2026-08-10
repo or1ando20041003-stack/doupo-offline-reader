@@ -3,6 +3,7 @@ import {
   type CleaningRuleCategory,
   type CleaningWarning,
 } from './types'
+import type { ProcessingProfile } from './processingProfile'
 
 export interface CleaningRuleOutput {
   text: string
@@ -20,6 +21,7 @@ export interface CleaningRule {
 export interface CleanTextOptions {
   rules?: readonly CleaningRule[]
   disabledRuleIds?: ReadonlySet<string>
+  profile?: ProcessingProfile
 }
 
 export interface CleanTextResult {
@@ -268,8 +270,21 @@ export const READING_CLEANING_RULES: readonly CleaningRule[] = [
   },
 ]
 
+const DOUPO_LEGACY_RULE_IDS = new Set([
+  'remove-book-title-banner',
+  'remove-wudongqiankun-promotion-lines',
+  'remove-wudongqiankun-suffix',
+  'remove-zhuaji-site-markers',
+  'remove-fast-update-markers',
+])
+
+export const GENERIC_CLEANING_RULES: readonly CleaningRule[] = READING_CLEANING_RULES
+  .filter(({ id }) => !DOUPO_LEGACY_RULE_IDS.has(id))
+
+export const DOUPO_LEGACY_CLEANING_RULES: readonly CleaningRule[] = READING_CLEANING_RULES
+
 // Backwards-compatible export name used by stage 1 callers/tests.
-export const BASIC_CLEANING_RULES = READING_CLEANING_RULES
+export const BASIC_CLEANING_RULES = GENERIC_CLEANING_RULES
 
 const POSSIBLE_READING_NOISE = /推荐票|月票|求.{0,4}(?:收藏|订阅|点击)|最快更新|手机.{0,6}阅读|手机用户|https?:\/\/|www\.|支持正版阅读|新书.{0,16}(?:发布|上传|推荐|收藏)/i
 const PUNCTUATION_ONLY_LINE = /^[，。！？、；：~～…·“”‘’（）()《》〈〉\-—\s]+$/
@@ -305,7 +320,8 @@ function collectWarnings(text: string): CleaningWarning[] {
 }
 
 export function cleanText(input: string, options: CleanTextOptions = {}): CleanTextResult {
-  const rules = options.rules ?? READING_CLEANING_RULES
+  const rules = options.rules
+    ?? (options.profile === 'doupoLegacy' ? DOUPO_LEGACY_CLEANING_RULES : GENERIC_CLEANING_RULES)
   const enabledRules = rules.filter(
     (rule) => rule.enabledByDefault && !options.disabledRuleIds?.has(rule.id),
   )

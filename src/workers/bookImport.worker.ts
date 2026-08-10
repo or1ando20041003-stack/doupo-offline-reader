@@ -5,6 +5,7 @@ import { decodeText } from '../book-processing/decodeText'
 import { parseChapters } from '../book-processing/parseChapters'
 import { parseReferenceChapters } from '../book-processing/referenceChapters'
 import { alignChaptersWithReference } from '../book-processing/chapterAlignment'
+import { selectProcessingProfile } from '../book-processing/processingProfile'
 import type { WorkerImportRequest, WorkerImportResponse } from '../book-processing/types'
 
 const workerScope: DedicatedWorkerGlobalScope = self as unknown as DedicatedWorkerGlobalScope
@@ -27,16 +28,17 @@ async function handleImport(event: MessageEvent<WorkerImportRequest>): Promise<v
     post({ type: 'progress', stage: 'decoding' })
     const decodeStartedAt = performance.now()
     const decoded = decodeText(event.data.payload.buffer)
+    const profile = selectProcessingProfile(event.data.payload.sourceFileName)
     const decodeMs = performance.now() - decodeStartedAt
 
     post({ type: 'progress', stage: 'cleaning' })
     const cleanStartedAt = performance.now()
-    const cleaned = cleanText(decoded.text)
+    const cleaned = cleanText(decoded.text, { profile })
     const cleanMs = performance.now() - cleanStartedAt
 
     post({ type: 'progress', stage: 'parsing' })
     const parseStartedAt = performance.now()
-    const parsed = parseChapters(cleaned.text)
+    const parsed = parseChapters(cleaned.text, { profile })
     let finalChapters = parsed.chapters
     let chapterAlignment
     const reference = event.data.payload.reference
@@ -44,42 +46,49 @@ async function handleImport(event: MessageEvent<WorkerImportRequest>): Promise<v
       try {
         const decodedReference = decodeText(reference.buffer)
         const referenceIndex = parseReferenceChapters(decodedReference.text, reference.sourceFileName)
-        if (referenceIndex.chapters.length > 0) {
-          const aligned = alignChaptersWithReference(parsed.chapters, referenceIndex, decodedReference.encoding)
+        if (referenceIndex.entries.length > 0) {
+          const aligned = alignChaptersWithReference(decoded.text, parsed.chapters, referenceIndex, {
+            profile,
+            referenceEncoding: decodedReference.encoding,
+          })
           finalChapters = aligned.chapters
           chapterAlignment = aligned.diagnostics
         } else {
           chapterAlignment = {
             referenceSourceFileName: reference.sourceFileName,
             referenceEncoding: decodedReference.encoding,
-            referenceChapterCount: 0,
-            referenceUnrecognizedLines: referenceIndex.unrecognizedLineCount,
+            referenceEntries: 0,
             bodyCandidateCount: parsed.chapters.length,
             originalChapterCount: parsed.chapters.length,
-            exactMatches: 0,
-            highMatches: 0,
+            rawExactMatches: 0,
+            normalizedExactMatches: 0,
+            bodyPrefixMatches: 0,
+            referencePrefixMatches: 0,
             fuzzyMatches: 0,
             unresolvedReferences: 0,
-            bodyOnlyChapters: parsed.chapters.length,
-            finalChapterCount: parsed.chapters.length,
-            alignmentTimeMs: 0,
+            bodyOnlyEntries: parsed.chapters.length,
+            finalEntries: parsed.chapters.length,
+            chapterNumberResets: 0,
+            alignmentMs: 0,
             warning: '章节目录为空或未识别到可靠条目，已自动使用普通章节解析结果。',
           }
         }
       } catch (error) {
         chapterAlignment = {
           referenceSourceFileName: reference.sourceFileName,
-          referenceChapterCount: 0,
-          referenceUnrecognizedLines: 0,
+          referenceEntries: 0,
           bodyCandidateCount: parsed.chapters.length,
           originalChapterCount: parsed.chapters.length,
-          exactMatches: 0,
-          highMatches: 0,
+          rawExactMatches: 0,
+          normalizedExactMatches: 0,
+          bodyPrefixMatches: 0,
+          referencePrefixMatches: 0,
           fuzzyMatches: 0,
           unresolvedReferences: 0,
-          bodyOnlyChapters: parsed.chapters.length,
-          finalChapterCount: parsed.chapters.length,
-          alignmentTimeMs: 0,
+          bodyOnlyEntries: parsed.chapters.length,
+          finalEntries: parsed.chapters.length,
+          chapterNumberResets: 0,
+          alignmentMs: 0,
           warning: '无法识别章节目录的编码或内容，已自动改用普通章节解析；正文仍可继续导入。',
         }
         console.warn('Reference chapter parsing skipped:', error)

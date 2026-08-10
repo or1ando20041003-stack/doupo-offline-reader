@@ -1,125 +1,94 @@
 import { parseChapterNumber } from './chineseNumber'
-import type { ReferenceChapter, ReferenceChapterIndex } from './types'
+import type { ReferenceChapterIndex, ReferenceEntry, ReferenceEntryKind } from './types'
 
-const CHAPTER_NUMERAL = '[零〇一二两三四五六七八九十百千万佰仟干\\d]+'
-const NUMBERED_HEADING = new RegExp(`^\\s*第\\s*(${CHAPTER_NUMERAL})\\s*章\\s*[:：、.．\\-—]?\\s*(.*?)\\s*$`, 'u')
-const HEADING_START = new RegExp(`第\\s*${CHAPTER_NUMERAL}\\s*章`, 'gu')
+const NUMERAL = '[零〇一二两三四五六七八九十百千万佰仟干\\d]+'
+const PREFIXED_CHAPTER = new RegExp(`^(.*?)第\\s*(${NUMERAL})\\s*[章张]\\s*[:：、.．\\-—]?\\s*(.*?)$`, 'u')
 const ORDERED_ITEM = /^\s*(\d{1,5})\s*[.．、)）]\s*(\S.*?)\s*$/u
-const SPECIAL_HEADING = /^\s*(序章|楔子|引子|终章|尾声|后记|番外(?:\s*[零〇一二两三四五六七八九十百千万\d]+)?)(?:\s*[:：、.．\-—]?\s*(.*?))?\s*$/u
-const WEB_RESIDUE = /(?:加入书签|返回目录|手机阅读|最新网址|请收藏本站|章节目录)\s*$/giu
+const DIRECTORY_HEADER = /^《[^》\n]{1,100}》\s*目录\s*$/u
 
-function normalizeSpaces(value: string): string {
-  return value.replace(/\u3000/gu, ' ').replace(/[\t ]+/gu, ' ').trim()
-}
-
-export function getChapterTitleParts(title: string): { chapterNumber: number | null; content: string } {
-  const numbered = NUMBERED_HEADING.exec(normalizeSpaces(title))
-  if (numbered) {
-    return {
-      chapterNumber: parseChapterNumber(numbered[1] ?? ''),
-      content: numbered[2] ?? '',
-    }
-  }
-  const ordered = ORDERED_ITEM.exec(normalizeSpaces(title))
-  if (ordered) {
-    return { chapterNumber: Number(ordered[1]), content: ordered[2] ?? '' }
-  }
-  return { chapterNumber: null, content: normalizeSpaces(title) }
-}
-
-export function normalizeChapterTitleForMatch(title: string): string {
-  const parts = getChapterTitleParts(title)
-  const content = parts.content
-    .replace(WEB_RESIDUE, '')
-    .toLocaleLowerCase('zh-CN')
-    .replace(/[\p{P}\p{S}\s]/gu, '')
-  return `${parts.chapterNumber === null ? '' : `第${parts.chapterNumber}章`}${content}`
-}
-
-export function normalizeChapterTitleContent(title: string): string {
-  const parts = getChapterTitleParts(title)
-  return parts.content
-    .replace(WEB_RESIDUE, '')
+export function normalizeReferenceLabel(value: string): string {
+  return value
+    .normalize('NFKC')
+    .replace(/^\uFEFF/u, '')
+    .trim()
     .toLocaleLowerCase('zh-CN')
     .replace(/[\p{P}\p{S}\s]/gu, '')
 }
 
-function splitMultipleHeadings(line: string): string[] {
-  const starts = [...line.matchAll(HEADING_START)].map((match) => match.index ?? 0)
-  if (starts.length < 2) return [line]
-  return starts.map((start, index) => line.slice(start, starts[index + 1] ?? line.length).trim())
+function classifyKind(label: string, hasChapterNumber: boolean): ReferenceEntryKind {
+  if (/附录\s*[零〇一二两三四五六七八九十百千万\d]*/u.test(label)) return 'appendix'
+  if (/完本总结|后记|尾声|终章/u.test(label)) return 'epilogue'
+  if (/楔子|引子/u.test(label)) return 'prologue'
+  if (/前言/u.test(label)) return 'preface'
+  if (hasChapterNumber) return 'chapter'
+  if (/序章|番外|大结局/u.test(label)) return 'special'
+  return 'unknown'
 }
 
-function parseReferenceEntry(value: string, order: number, sourceLine: number): ReferenceChapter | null {
-  const line = normalizeSpaces(value)
-  const numbered = NUMBERED_HEADING.exec(line)
-  if (numbered) {
-    const numeral = numbered[1] ?? ''
-    const suffix = normalizeSpaces(numbered[2] ?? '')
-    const title = `第${numeral}章${suffix ? ` ${suffix}` : ''}`
+export function extractReferenceMetadata(rawLabel: string): Omit<ReferenceEntry, 'order' | 'rawLabel' | 'normalizedLabel' | 'sourceLine'> {
+  const chapter = PREFIXED_CHAPTER.exec(rawLabel)
+  if (chapter) {
+    const groupTitle = chapter[1]?.trim() || undefined
+    const chapterNumber = parseChapterNumber(chapter[2] ?? '')
+    const chapterTitle = chapter[3]?.trim() || undefined
+    return { chapterNumber, chapterTitle, groupTitle, kind: classifyKind(rawLabel, true) }
+  }
+  const ordered = ORDERED_ITEM.exec(rawLabel)
+  if (ordered) {
     return {
-      order,
-      chapterNumber: parseChapterNumber(numeral),
-      title,
-      normalizedTitle: normalizeChapterTitleForMatch(title),
-      sourceLine,
+      chapterNumber: Number(ordered[1]),
+      chapterTitle: ordered[2]?.trim() || undefined,
+      kind: 'chapter',
     }
   }
-
-  const ordered = ORDERED_ITEM.exec(line)
-  if (ordered) {
-    const chapterNumber = Number(ordered[1])
-    const title = `第${chapterNumber}章 ${normalizeSpaces(ordered[2] ?? '')}`
-    return { order, chapterNumber, title, normalizedTitle: normalizeChapterTitleForMatch(title), sourceLine }
-  }
-
-  const special = SPECIAL_HEADING.exec(line)
-  if (special) {
-    const title = normalizeSpaces([special[1], special[2]].filter(Boolean).join(' '))
-    return { order, chapterNumber: null, title, normalizedTitle: normalizeChapterTitleForMatch(title), sourceLine }
-  }
-  return null
+  return { chapterNumber: null, kind: classifyKind(rawLabel, false) }
 }
 
 export function parseReferenceChapters(text: string, sourceFileName: string): ReferenceChapterIndex {
-  const chapters: ReferenceChapter[] = []
-  let unrecognizedLineCount = 0
-  text.split(/\r?\n/u).forEach((rawLine, lineIndex) => {
-    const line = rawLine.trim()
-    if (!line) return
-    const segments = splitMultipleHeadings(line)
-    let recognizedOnLine = false
-    for (const segment of segments) {
-      const chapter = parseReferenceEntry(segment, chapters.length, lineIndex + 1)
-      if (chapter) {
-        chapters.push(chapter)
-        recognizedOnLine = true
-      }
-    }
-    if (!recognizedOnLine) unrecognizedLineCount += 1
+  const normalizedText = text.replace(/^\uFEFF/u, '').replace(/\r\n?|\u2028|\u2029/gu, '\n')
+  const sourceLines = normalizedText.split('\n')
+  const firstNonEmptyIndex = sourceLines.findIndex((line) => line.trim().length > 0)
+  const headerLine = firstNonEmptyIndex >= 0 && DIRECTORY_HEADER.test(sourceLines[firstNonEmptyIndex]?.trim() ?? '')
+    ? sourceLines[firstNonEmptyIndex]?.trim()
+    : undefined
+  const entries: ReferenceEntry[] = []
+
+  sourceLines.forEach((source, lineIndex) => {
+    const line = source.trim()
+    if (!line || (lineIndex === firstNonEmptyIndex && headerLine)) return
+    entries.push({
+      order: entries.length,
+      rawLabel: line,
+      normalizedLabel: normalizeReferenceLabel(line),
+      sourceLine: lineIndex + 1,
+      ...extractReferenceMetadata(line),
+    })
   })
 
   const numberCounts = new Map<number, number>()
-  const titleCounts = new Map<string, number>()
-  for (const chapter of chapters) {
-    if (chapter.chapterNumber !== null) {
-      numberCounts.set(chapter.chapterNumber, (numberCounts.get(chapter.chapterNumber) ?? 0) + 1)
+  const labelCounts = new Map<string, number>()
+  let chapterNumberResets = 0
+  let previousNumber: number | null = null
+  for (const entry of entries) {
+    if (entry.chapterNumber !== null) {
+      numberCounts.set(entry.chapterNumber, (numberCounts.get(entry.chapterNumber) ?? 0) + 1)
+      if (previousNumber !== null && entry.chapterNumber < previousNumber) chapterNumberResets += 1
+      previousNumber = entry.chapterNumber
     }
-    titleCounts.set(chapter.normalizedTitle, (titleCounts.get(chapter.normalizedTitle) ?? 0) + 1)
+    labelCounts.set(entry.normalizedLabel, (labelCounts.get(entry.normalizedLabel) ?? 0) + 1)
   }
   const duplicateChapterNumberCount = [...numberCounts.values()].filter((count) => count > 1).length
-  const duplicateTitleCount = [...titleCounts.values()].filter((count) => count > 1).length
+  const duplicateLabelCount = [...labelCounts.values()].filter((count) => count > 1).length
   const warnings: string[] = []
-  if (unrecognizedLineCount > 0) warnings.push(`${unrecognizedLineCount} 行未识别为章节目录，已忽略。`)
-  if (duplicateChapterNumberCount > 0) warnings.push(`目录中有 ${duplicateChapterNumberCount} 组重复章号，将按出现顺序对齐。`)
-  if (duplicateTitleCount > 0) warnings.push(`目录中有 ${duplicateTitleCount} 组可能重复标题，将按出现顺序对齐。`)
+  if (duplicateLabelCount > 0) warnings.push(`目录中有 ${duplicateLabelCount} 组重复完整标题，将按正文位置依次匹配。`)
 
   return {
-    chapters,
+    entries,
     sourceFileName,
-    unrecognizedLineCount,
+    headerLine,
     duplicateChapterNumberCount,
-    duplicateTitleCount,
+    duplicateLabelCount,
+    chapterNumberResets,
     warnings,
   }
 }

@@ -1,4 +1,5 @@
 import type { ParsedChapter, ParseWarning } from './types'
+import type { ProcessingProfile } from './processingProfile'
 
 export interface SectionClassificationResult {
   chapters: ParsedChapter[]
@@ -16,8 +17,17 @@ export const defaultConclusionMatcher: ConclusionMatcher = (chapter) =>
 
 export function classifySections(
   chapters: readonly ParsedChapter[],
+  profile: ProcessingProfile = 'generic',
   matcher: ConclusionMatcher = defaultConclusionMatcher,
 ): SectionClassificationResult {
+  if (profile === 'generic') {
+    return {
+      chapters: chapters.map((chapter) => ({ ...chapter, section: 'main' })),
+      warnings: [],
+      conclusionOrder: null,
+      canonicalEndingDetected: false,
+    }
+  }
   const conclusionIndex = chapters.findIndex(matcher)
   if (conclusionIndex < 0) {
     return {

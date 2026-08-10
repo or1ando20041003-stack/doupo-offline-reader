@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ImportStage, WorkerImportResponse, WorkerParsedPayload } from '../book-processing/types'
+import type { ImportStage, WorkerImportRequest, WorkerImportResponse, WorkerParsedPayload } from '../book-processing/types'
 import { ReaderDatabase } from '../db/readerDatabase'
 import { ReaderRepository } from '../db/repositories'
 import { loadBookshelf } from './bookshelf'
@@ -46,12 +46,16 @@ function testFile(name = '测试小说 完整版.TXT'): File {
   } as File
 }
 
-function fakeWorker(result: WorkerImportResponse = { type: 'result', payload: parsed }) {
+function fakeWorker(
+  result: WorkerImportResponse = { type: 'result', payload: parsed },
+  onPost?: (message: WorkerImportRequest) => void,
+) {
   return () => {
     const worker = {
       onmessage: null as ((event: MessageEvent<WorkerImportResponse>) => void) | null,
       onerror: null as ((event: ErrorEvent) => void) | null,
-      postMessage: vi.fn(() => {
+      postMessage: vi.fn((message: WorkerImportRequest) => {
+        onPost?.(message)
         queueMicrotask(() => {
           if (result.type === 'result') {
             for (const stage of ['decoding', 'cleaning', 'parsing'] as const) {
@@ -108,6 +112,17 @@ describe('two-phase book import', () => {
     expect((await promise).contentHash).toBe('abc123')
   })
 
+  it('forwards the body file name so the worker can select an isolated processing profile', async () => {
+    let request: WorkerImportRequest | undefined
+    await prepareBookImport(
+      testFile('覆汉.txt'),
+      () => undefined,
+      repository,
+      fakeWorker(undefined, (message) => { request = message }),
+    )
+    expect(request?.payload.sourceFileName).toBe('覆汉.txt')
+  })
+
   it('cancels without creating any database records', async () => {
     await prepareBookImport(testFile(), () => undefined, repository, fakeWorker())
     expect(await repository.getBooks()).toEqual([])
@@ -119,17 +134,19 @@ describe('two-phase book import', () => {
     const alignment = {
       referenceSourceFileName: '测试小说-目录.txt',
       referenceEncoding: 'utf-8' as const,
-      referenceChapterCount: 1,
-      referenceUnrecognizedLines: 0,
+      referenceEntries: 1,
       bodyCandidateCount: 1,
       originalChapterCount: 1,
-      exactMatches: 1,
-      highMatches: 0,
+      rawExactMatches: 1,
+      normalizedExactMatches: 0,
+      bodyPrefixMatches: 0,
+      referencePrefixMatches: 0,
       fuzzyMatches: 0,
       unresolvedReferences: 0,
-      bodyOnlyChapters: 0,
-      finalChapterCount: 1,
-      alignmentTimeMs: 2,
+      bodyOnlyEntries: 0,
+      finalEntries: 1,
+      chapterNumberResets: 0,
+      alignmentMs: 2,
     }
     const prepared = await prepareBookImportFiles(
       { bodyFile: testFile('测试小说.txt'), referenceFile: testFile('测试小说-目录.txt') },
@@ -141,7 +158,10 @@ describe('two-phase book import', () => {
     await confirmBookImport(prepared, { title: '测试小说' }, () => undefined, repository)
     const books = await repository.getBooks()
     expect(books).toHaveLength(1)
-    expect(books[0]).toMatchObject({ sourceFileName: '测试小说.txt', importDiagnostics: { exactMatches: 1 } })
+    expect(books[0]).toMatchObject({
+      sourceFileName: '测试小说.txt',
+      importDiagnostics: { rawExactMatches: 1, chapterNumberResets: 0 },
+    })
     expect(books.some(({ sourceFileName }) => sourceFileName.includes('目录'))).toBe(false)
   })
 
@@ -150,9 +170,10 @@ describe('two-phase book import', () => {
       ...parsed,
       contentHash: 'book-a-hash',
       chapterAlignment: {
-        referenceSourceFileName: '甲目录.txt', referenceChapterCount: 1, referenceUnrecognizedLines: 0,
-        bodyCandidateCount: 1, originalChapterCount: 1, exactMatches: 1, highMatches: 0, fuzzyMatches: 0,
-        unresolvedReferences: 0, bodyOnlyChapters: 0, finalChapterCount: 1, alignmentTimeMs: 1,
+        referenceSourceFileName: '甲目录.txt', referenceEntries: 1,
+        bodyCandidateCount: 1, originalChapterCount: 1, rawExactMatches: 1, normalizedExactMatches: 0,
+        bodyPrefixMatches: 0, referencePrefixMatches: 0, fuzzyMatches: 0, unresolvedReferences: 0,
+        bodyOnlyEntries: 0, finalEntries: 1, chapterNumberResets: 0, alignmentMs: 1,
       },
     }
     const secondPayload = {
@@ -161,8 +182,8 @@ describe('two-phase book import', () => {
       chapterAlignment: {
         ...firstPayload.chapterAlignment,
         referenceSourceFileName: '乙目录.txt',
-        exactMatches: 0,
-        highMatches: 1,
+        rawExactMatches: 0,
+        normalizedExactMatches: 1,
       },
     }
     const first = await prepareBookImportFiles(
@@ -177,8 +198,8 @@ describe('two-phase book import', () => {
     await confirmBookImport(second, { title: '乙书' }, () => undefined, repository)
     const books = await repository.getBooks()
     expect(books).toHaveLength(2)
-    expect(books.find(({ title }) => title === '甲书')?.importDiagnostics?.exactMatches).toBe(1)
-    expect(books.find(({ title }) => title === '乙书')?.importDiagnostics?.highMatches).toBe(1)
+    expect(books.find(({ title }) => title === '甲书')?.importDiagnostics?.rawExactMatches).toBe(1)
+    expect(books.find(({ title }) => title === '乙书')?.importDiagnostics?.normalizedExactMatches).toBe(1)
   })
 
   it('falls back to normal parsing when the reference file cannot be read', async () => {

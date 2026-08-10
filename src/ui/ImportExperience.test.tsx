@@ -119,23 +119,25 @@ describe('book import UI', () => {
     prepared.summary.chapterAlignment = {
       referenceSourceFileName: '斗破苍穹-目录.txt',
       referenceEncoding: 'utf-8',
-      referenceChapterCount: 1_520,
-      referenceUnrecognizedLines: 2,
+      referenceEntries: 1_520,
       bodyCandidateCount: 1_478,
       originalChapterCount: 1_478,
-      exactMatches: 1_400,
-      highMatches: 40,
+      rawExactMatches: 1_400,
+      normalizedExactMatches: 40,
+      bodyPrefixMatches: 20,
+      referencePrefixMatches: 4,
       fuzzyMatches: 24,
       unresolvedReferences: 56,
-      bodyOnlyChapters: 14,
-      finalChapterCount: 1_492,
-      alignmentTimeMs: 31,
+      bodyOnlyEntries: 14,
+      finalEntries: 1_492,
+      chapterNumberResets: 17,
+      alignmentMs: 31,
     }
     const html = renderToStaticMarkup(
       <ImportConfirmation prepared={prepared} saving={false} onCancel={() => undefined} onConfirm={() => undefined} />,
     )
     expect(html).toContain('章节目录辅助结果')
-    expect(html).toContain('未找到目录章节')
+    expect(html).toContain('未定位')
     expect(html).toContain('56')
     expect(html).toContain('已保持与相邻正文合并，不影响导入')
     expect(html).toContain('确认导入')

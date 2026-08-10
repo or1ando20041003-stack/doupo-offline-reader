@@ -5,6 +5,7 @@ import { inspectBookText } from '../src/book-processing/analyzeBook'
 import { cleanText } from '../src/book-processing/cleanText'
 import { decodeText } from '../src/book-processing/decodeText'
 import { parseChapters } from '../src/book-processing/parseChapters'
+import { selectProcessingProfile } from '../src/book-processing/processingProfile'
 import { CLEANER_VERSION, PARSER_VERSION, type ParsedChapter } from '../src/book-processing/types'
 import { ReaderDatabase } from '../src/db/readerDatabase'
 import { ReaderRepository } from '../src/db/repositories'
@@ -72,14 +73,15 @@ if (!inputPath) {
 
   const decodeStartedAt = performance.now()
   const decoded = decodeText(exactArrayBuffer(bytes))
+  const profile = selectProcessingProfile(basename(resolvedInput))
   const decodeMs = performance.now() - decodeStartedAt
 
   const cleanStartedAt = performance.now()
-  const cleaned = cleanText(decoded.text)
+  const cleaned = cleanText(decoded.text, { profile })
   const cleanMs = performance.now() - cleanStartedAt
 
   const parseStartedAt = performance.now()
-  const parsed = parseChapters(cleaned.text)
+  const parsed = parseChapters(cleaned.text, { profile })
   const parseMs = performance.now() - parseStartedAt
 
   const inspection = inspectBookText(

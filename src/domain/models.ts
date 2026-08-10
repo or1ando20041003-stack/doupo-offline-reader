@@ -24,15 +24,18 @@ export interface Book {
   parserVersion: string
   cleanerVersion: string
   importDiagnostics?: {
-    referenceChapterCount: number
+    referenceEntries: number
     bodyCandidateCount: number
-    exactMatches: number
-    highMatches: number
+    rawExactMatches: number
+    normalizedExactMatches: number
+    bodyPrefixMatches: number
+    referencePrefixMatches: number
     fuzzyMatches: number
     unresolvedReferences: number
-    bodyOnlyChapters: number
-    finalChapterCount: number
-    alignmentTimeMs: number
+    bodyOnlyEntries: number
+    finalEntries: number
+    chapterNumberResets?: number
+    alignmentMs: number
   }
 }
 
@@ -49,7 +52,7 @@ export interface Chapter {
   sectionCharacterStart: number
   rawTitle?: string
   referenceTitle?: string
-  referenceMatchType?: 'exact' | 'high' | 'fuzzy'
+  referenceMatchType?: 'raw-exact' | 'normalized-exact' | 'body-prefix' | 'reference-prefix' | 'fuzzy'
 }
 
 export interface ReadingProgress {

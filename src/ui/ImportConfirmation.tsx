@@ -44,18 +44,20 @@ export function ImportConfirmation({ prepared, saving, error, onCancel, onConfir
             <h3 id="alignment-summary-title">章节目录辅助结果</h3>
             <p title={alignment.referenceSourceFileName}>目录：{alignment.referenceSourceFileName}</p>
             <dl className="alignment-stats">
-              <div><dt>目录章节</dt><dd>{alignment.referenceChapterCount.toLocaleString('zh-CN')}</dd></div>
-              <div><dt>正文原始检测</dt><dd>{alignment.originalChapterCount.toLocaleString('zh-CN')}</dd></div>
-              <div><dt>高置信匹配</dt><dd>{(alignment.exactMatches + alignment.highMatches).toLocaleString('zh-CN')}</dd></div>
+              <div><dt>目录条目</dt><dd>{alignment.referenceEntries.toLocaleString('zh-CN')}</dd></div>
+              <div><dt>正文初始候选</dt><dd>{alignment.originalChapterCount.toLocaleString('zh-CN')}</dd></div>
+              <div><dt>精确定位</dt><dd>{alignment.rawExactMatches.toLocaleString('zh-CN')}</dd></div>
+              <div><dt>格式修复</dt><dd>{alignment.normalizedExactMatches.toLocaleString('zh-CN')}</dd></div>
+              <div><dt>前缀修复</dt><dd>{(alignment.bodyPrefixMatches + alignment.referencePrefixMatches).toLocaleString('zh-CN')}</dd></div>
               <div><dt>模糊匹配</dt><dd>{alignment.fuzzyMatches.toLocaleString('zh-CN')}</dd></div>
-              <div><dt>未找到目录章节</dt><dd>{alignment.unresolvedReferences.toLocaleString('zh-CN')}</dd></div>
-              <div><dt>正文独有章节</dt><dd>{alignment.bodyOnlyChapters.toLocaleString('zh-CN')}</dd></div>
-              <div><dt>最终章节</dt><dd>{alignment.finalChapterCount.toLocaleString('zh-CN')}</dd></div>
+              <div><dt>未定位</dt><dd>{alignment.unresolvedReferences.toLocaleString('zh-CN')}</dd></div>
+              <div><dt>正文独有</dt><dd>{alignment.bodyOnlyEntries.toLocaleString('zh-CN')}</dd></div>
+              <div><dt>最终阅读条目</dt><dd>{alignment.finalEntries.toLocaleString('zh-CN')}</dd></div>
             </dl>
             {alignment.warning ? (
               <p className="alignment-note">{alignment.warning}</p>
             ) : alignment.unresolvedReferences > 0 ? (
-              <p className="alignment-note">部分目录章节未在正文中找到可靠边界，已保持与相邻正文合并，不影响导入。</p>
+              <p className="alignment-note">部分目录条目未在正文中找到可靠边界，已保持与相邻正文合并，不影响导入。</p>
             ) : null}
           </section>
         )}

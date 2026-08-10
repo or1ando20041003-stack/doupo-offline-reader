@@ -84,6 +84,7 @@ export function parseBookBufferInWorker(
   onStage: (stage: ImportStage) => void,
   createWorker: ImportWorkerFactory = defaultWorkerFactory,
   reference?: { buffer: ArrayBuffer; sourceFileName: string },
+  sourceFileName = '未命名.txt',
 ): Promise<WorkerParsedPayload> {
   return new Promise((resolve, reject) => {
     const worker = createWorker()
@@ -109,7 +110,7 @@ export function parseBookBufferInWorker(
       reject(new Error('后台文本处理程序启动失败，请刷新页面后重试。'))
     }
 
-    const request: WorkerImportRequest = { type: 'import', payload: { buffer, reference } }
+    const request: WorkerImportRequest = { type: 'import', payload: { buffer, sourceFileName, reference } }
     const transfer: Transferable[] = reference ? [buffer, reference.buffer] : [buffer]
     worker.postMessage(request, transfer)
   })
@@ -172,21 +173,23 @@ export async function prepareBookImportFiles(
       }
     }
   }
-  const parsed = await parseBookBufferInWorker(buffer, onStage, createWorker, reference)
+  const parsed = await parseBookBufferInWorker(buffer, onStage, createWorker, reference, file.name)
   if (referenceFile && referenceReadWarning && !parsed.chapterAlignment) {
     parsed.chapterAlignment = {
       referenceSourceFileName: referenceFile.name,
-      referenceChapterCount: 0,
-      referenceUnrecognizedLines: 0,
+      referenceEntries: 0,
       bodyCandidateCount: parsed.chapters.length,
       originalChapterCount: parsed.chapters.length,
-      exactMatches: 0,
-      highMatches: 0,
+      rawExactMatches: 0,
+      normalizedExactMatches: 0,
+      bodyPrefixMatches: 0,
+      referencePrefixMatches: 0,
       fuzzyMatches: 0,
       unresolvedReferences: 0,
-      bodyOnlyChapters: parsed.chapters.length,
-      finalChapterCount: parsed.chapters.length,
-      alignmentTimeMs: 0,
+      bodyOnlyEntries: parsed.chapters.length,
+      finalEntries: parsed.chapters.length,
+      chapterNumberResets: 0,
+      alignmentMs: 0,
       warning: referenceReadWarning,
     }
   }
@@ -261,15 +264,18 @@ export async function confirmBookImport(
     parserVersion: PARSER_VERSION,
     cleanerVersion: CLEANER_VERSION,
     importDiagnostics: prepared.summary.chapterAlignment ? {
-      referenceChapterCount: prepared.summary.chapterAlignment.referenceChapterCount,
+      referenceEntries: prepared.summary.chapterAlignment.referenceEntries,
       bodyCandidateCount: prepared.summary.chapterAlignment.bodyCandidateCount,
-      exactMatches: prepared.summary.chapterAlignment.exactMatches,
-      highMatches: prepared.summary.chapterAlignment.highMatches,
+      rawExactMatches: prepared.summary.chapterAlignment.rawExactMatches,
+      normalizedExactMatches: prepared.summary.chapterAlignment.normalizedExactMatches,
+      bodyPrefixMatches: prepared.summary.chapterAlignment.bodyPrefixMatches,
+      referencePrefixMatches: prepared.summary.chapterAlignment.referencePrefixMatches,
       fuzzyMatches: prepared.summary.chapterAlignment.fuzzyMatches,
       unresolvedReferences: prepared.summary.chapterAlignment.unresolvedReferences,
-      bodyOnlyChapters: prepared.summary.chapterAlignment.bodyOnlyChapters,
-      finalChapterCount: prepared.summary.chapterAlignment.finalChapterCount,
-      alignmentTimeMs: prepared.summary.chapterAlignment.alignmentTimeMs,
+      bodyOnlyEntries: prepared.summary.chapterAlignment.bodyOnlyEntries,
+      finalEntries: prepared.summary.chapterAlignment.finalEntries,
+      chapterNumberResets: prepared.summary.chapterAlignment.chapterNumberResets,
+      alignmentMs: prepared.summary.chapterAlignment.alignmentMs,
     } : undefined,
   }
   const initialProgress: ReadingProgress = {

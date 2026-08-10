@@ -15,13 +15,13 @@ describe('cleanText', () => {
   })
 
   it('removes the measured 武动乾坤 paragraph suffix without damaging punctuation', () => {
-    expect(cleanText('一段人工剧情武动乾坤。\n另一段人工剧情。武动乾坤').text).toBe(
+    expect(cleanText('一段人工剧情武动乾坤。\n另一段人工剧情。武动乾坤', { profile: 'doupoLegacy' }).text).toBe(
       '一段人工剧情。\n另一段人工剧情。',
     )
   })
 
   it('removes a whole new-book promotion instead of leaving empty delimiters', () => {
-    const result = cleanText('人工正文。\n宣传一下新书《武动乾坤》，请大家收藏推荐。\n下一段。')
+    const result = cleanText('人工正文。\n宣传一下新书《武动乾坤》，请大家收藏推荐。\n下一段。', { profile: 'doupoLegacy' })
     expect(result.text).toBe('人工正文。\n下一段。')
     expect(result.text).not.toContain('《》')
     expect(result.ruleHits['remove-wudongqiankun-promotion-lines']).toBe(1)
@@ -56,7 +56,7 @@ describe('cleanText', () => {
   })
 
   it('removes an inline site watermark while preserving adjacent story text', () => {
-    expect(cleanText('手机端阅读请登陆m.zhuaji.org人工剧情继续。').text).toBe('人工剧情继续。')
+    expect(cleanText('手机端阅读请登陆m.zhuaji.org人工剧情继续。', { profile: 'doupoLegacy' }).text).toBe('人工剧情继续。')
   })
 
   it('removes confirmed chapter-more/support-author boilerplate variants', () => {
@@ -75,9 +75,18 @@ describe('cleanText', () => {
 
   it('allows an individual rule to be disabled for diagnostics', () => {
     const result = cleanText('人工剧情武动乾坤。', {
+      profile: 'doupoLegacy',
       disabledRuleIds: new Set(['remove-wudongqiankun-suffix']),
     })
     expect(result.text).toContain('武动乾坤')
     expect(result.appliedRuleIds).not.toContain('remove-wudongqiankun-suffix')
+  })
+
+  it('does not run Doupo-specific rules for a generic book', () => {
+    const input = '人物在正文中讨论武动乾坤。'
+    const result = cleanText(input)
+    expect(result.text).toBe(input)
+    expect(result.appliedRuleIds).not.toContain('remove-wudongqiankun-suffix')
+    expect(result.appliedRuleIds).not.toContain('remove-book-title-banner')
   })
 })

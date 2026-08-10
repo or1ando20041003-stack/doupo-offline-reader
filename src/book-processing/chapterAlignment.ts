@@ -1,35 +1,79 @@
+import { buildBodyLineIndex, type BodyLine, type BodyLineIndex } from './bodyLineIndex'
+import { cleanText } from './cleanText'
+import { classifySections } from './classifySections'
+import type { ProcessingProfile } from './processingProfile'
+import { extractReferenceMetadata, normalizeReferenceLabel } from './referenceChapters'
 import type {
   ChapterAlignmentMatch,
   ChapterAlignmentResult,
   ChapterMatchReason,
   ChapterMatchType,
   ParsedChapter,
-  ReferenceChapter,
   ReferenceChapterIndex,
+  ReferenceEntry,
 } from './types'
-import { getChapterTitleParts, normalizeChapterTitleContent, normalizeChapterTitleForMatch } from './referenceChapters'
 
-interface BodyCandidate {
-  order: number
-  kind: 'boundary' | 'attached'
-  chapterIndex: number
-  paragraphIndex?: number
-  chapterNumber: number | null
-  rawTitle: string
-  normalizedTitle: string
-  normalizedContent: string
-}
-
-interface CandidateMatch {
-  candidate: BodyCandidate
-  reference: ReferenceChapter
+interface ReferenceAnchor {
+  entry: ReferenceEntry
+  line: BodyLine
   matchType: Exclude<ChapterMatchType, 'unresolved'>
   score: number
   reasons: ChapterMatchReason[]
 }
 
-const ATTACHED_HEADING = /^\s*(第\s*[零〇一二两三四五六七八九十百千万佰仟干\d]+\s*章)\s*[:：、.．\-—]?\s*(.+)$/u
-const SPECIAL_HEADING = /^\s*(序章|楔子|引子|终章|尾声|后记|番外(?:\s*[零〇一二两三四五六七八九十百千万\d]+)?)(?:\s*[:：、.．\-—]?\s*.*)?$/u
+interface FinalAnchor {
+  line: BodyLine
+  title: string
+  chapterNumber: number | null
+  source: 'reference' | 'body-only'
+  reference?: ReferenceAnchor
+  bodyChapter?: ParsedChapter
+}
+
+function firstAfter(lines: readonly BodyLine[] | undefined, minimumOffset: number): BodyLine | undefined {
+  return lines?.find(({ startCharacterOffset }) => startCharacterOffset > minimumOffset)
+}
+
+function resolveStrongAnchors(index: BodyLineIndex, entries: readonly ReferenceEntry[]): ReferenceAnchor[] {
+  const anchors: ReferenceAnchor[] = []
+  let previousOffset = -1
+  for (const entry of entries) {
+    const raw = firstAfter(index.byTrimmedLine.get(entry.rawLabel.trim()), previousOffset)
+    if (raw) {
+      anchors.push({
+        entry,
+        line: raw,
+        matchType: 'raw-exact',
+        score: 1,
+        reasons: ['RAW_LINE_EXACT', 'ORDER_CONSISTENT'],
+      })
+      previousOffset = raw.startCharacterOffset
+      continue
+    }
+    const normalized = firstAfter(index.byNormalizedLine.get(entry.normalizedLabel), previousOffset)
+    if (normalized) {
+      anchors.push({
+        entry,
+        line: normalized,
+        matchType: 'normalized-exact',
+        score: 0.96,
+        reasons: ['NORMALIZED_LINE_EXACT', 'ORDER_CONSISTENT'],
+      })
+      previousOffset = normalized.startCharacterOffset
+    }
+  }
+  return anchors
+}
+
+function boundsFor(referenceOrder: number, anchors: readonly ReferenceAnchor[]): { after: number; before: number } {
+  let after = -1
+  let before = Number.POSITIVE_INFINITY
+  for (const anchor of anchors) {
+    if (anchor.entry.order < referenceOrder) after = Math.max(after, anchor.line.startCharacterOffset)
+    if (anchor.entry.order > referenceOrder) before = Math.min(before, anchor.line.startCharacterOffset)
+  }
+  return { after, before }
+}
 
 function similarity(left: string, right: string): number {
   if (left === right) return 1
@@ -51,122 +95,130 @@ function similarity(left: string, right: string): number {
   return (2 * overlap) / (left.length + right.length - 2)
 }
 
-function buildCandidates(chapters: readonly ParsedChapter[]): BodyCandidate[] {
-  const candidates: BodyCandidate[] = []
-  chapters.forEach((chapter, chapterIndex) => {
-    candidates.push({
-      order: candidates.length,
-      kind: 'boundary',
-      chapterIndex,
+function resolvePrefixAndFuzzyAnchors(
+  index: BodyLineIndex,
+  entries: readonly ReferenceEntry[],
+  strongAnchors: readonly ReferenceAnchor[],
+): ReferenceAnchor[] {
+  const anchors = [...strongAnchors]
+  const resolvedOrders = new Set(anchors.map(({ entry }) => entry.order))
+  const usedOffsets = new Set(anchors.map(({ line }) => line.startCharacterOffset))
+  const unresolved = entries.filter(({ order }) => !resolvedOrders.has(order))
+
+  for (const entry of unresolved) {
+    const { after, before } = boundsFor(entry.order, anchors)
+    const candidates = index.nonEmptyLines.filter((line) => (
+      line.startCharacterOffset > after
+      && line.startCharacterOffset < before
+      && !usedOffsets.has(line.startCharacterOffset)
+      && line.normalizedLine.length >= 4
+    ))
+    let best: ReferenceAnchor | undefined
+    for (const line of candidates) {
+      const bodyPrefix = entry.normalizedLabel.startsWith(line.normalizedLine)
+        && line.normalizedLine.length / Math.max(1, entry.normalizedLabel.length) >= 0.3
+      const referencePrefix = line.normalizedLine.startsWith(entry.normalizedLabel)
+        && entry.normalizedLabel.length >= 4
+      if (bodyPrefix) {
+        const score = 0.9 + 0.05 * (line.normalizedLine.length / entry.normalizedLabel.length)
+        if (!best || score > best.score) {
+          best = {
+            entry,
+            line,
+            matchType: 'body-prefix',
+            score,
+            reasons: ['BODY_PREFIX_OF_REFERENCE', 'ORDER_CONSISTENT'],
+          }
+        }
+      } else if (referencePrefix) {
+        const score = 0.86 + 0.05 * (entry.normalizedLabel.length / line.normalizedLine.length)
+        if (!best || score > best.score) {
+          best = {
+            entry,
+            line,
+            matchType: 'reference-prefix',
+            score,
+            reasons: ['REFERENCE_PREFIX_OF_BODY', 'ATTACHED_TEXT', 'ORDER_CONSISTENT'],
+          }
+        }
+      }
+    }
+
+    if (!best && unresolved.length <= 100 && entry.chapterNumber !== null) {
+      for (const line of candidates.filter(({ trimmedLine }) => trimmedLine.length <= 120)) {
+        const metadata = extractReferenceMetadata(line.trimmedLine)
+        if (metadata.chapterNumber !== entry.chapterNumber) continue
+        const score = similarity(line.normalizedLine, entry.normalizedLabel)
+        if (score >= 0.88 && (!best || score > best.score)) {
+          best = {
+            entry,
+            line,
+            matchType: 'fuzzy',
+            score,
+            reasons: ['NUMBER_EXACT', 'TITLE_SIMILAR', 'ORDER_CONSISTENT'],
+          }
+        }
+      }
+    }
+
+    if (best) {
+      anchors.push(best)
+      usedOffsets.add(best.line.startCharacterOffset)
+    }
+  }
+  return anchors.sort((left, right) => left.entry.order - right.entry.order)
+}
+
+function locateBodyOnlyAnchors(
+  index: BodyLineIndex,
+  bodyChapters: readonly ParsedChapter[],
+  referenceAnchors: readonly ReferenceAnchor[],
+): FinalAnchor[] {
+  const referenceOffsets = new Set(referenceAnchors.map(({ line }) => line.startCharacterOffset))
+  const anchors: FinalAnchor[] = []
+  let previousOffset = -1
+  for (const chapter of bodyChapters) {
+    if (chapter.title === '全文' || chapter.title === '前言') continue
+    const raw = firstAfter(index.byTrimmedLine.get(chapter.title.trim()), previousOffset)
+    const line = raw ?? firstAfter(index.byNormalizedLine.get(normalizeReferenceLabel(chapter.title)), previousOffset)
+    if (!line) continue
+    previousOffset = line.startCharacterOffset
+    if (referenceOffsets.has(line.startCharacterOffset)) continue
+    anchors.push({
+      line,
+      title: chapter.title,
       chapterNumber: chapter.chapterNumber,
-      rawTitle: chapter.title,
-      normalizedTitle: normalizeChapterTitleForMatch(chapter.title),
-      normalizedContent: normalizeChapterTitleContent(chapter.title),
+      source: 'body-only',
+      bodyChapter: chapter,
     })
-    chapter.paragraphs.forEach((paragraph, paragraphIndex) => {
-      const heading = ATTACHED_HEADING.exec(paragraph)
-      const specialHeading = SPECIAL_HEADING.test(paragraph)
-      if (!heading && !specialHeading) return
-      const rawTitle = heading ? `${heading[1]} ${heading[2]}` : paragraph
-      const parts = getChapterTitleParts(rawTitle)
-      if (heading && parts.chapterNumber === null) return
-      candidates.push({
-        order: candidates.length,
-        kind: 'attached',
-        chapterIndex,
-        paragraphIndex,
-        chapterNumber: parts.chapterNumber,
-        rawTitle,
-        normalizedTitle: normalizeChapterTitleForMatch(rawTitle),
-        normalizedContent: normalizeChapterTitleContent(rawTitle),
-      })
-    })
-  })
-  return candidates
+  }
+  return anchors
 }
 
-function classifyMatch(candidate: BodyCandidate, reference: ReferenceChapter): Omit<CandidateMatch, 'candidate' | 'reference'> | null {
-  const sameNumber = candidate.chapterNumber !== null
-    && reference.chapterNumber !== null
-    && candidate.chapterNumber === reference.chapterNumber
-  const bothSpecial = candidate.chapterNumber === null && reference.chapterNumber === null
-  if (!sameNumber && !bothSpecial) return null
-
-  const referenceContent = normalizeChapterTitleContent(reference.title)
-  const reasons: ChapterMatchReason[] = ['ORDER_CONSISTENT']
-  if (sameNumber) reasons.push('NUMBER_EXACT')
-  const rawEqual = candidate.rawTitle.replace(/\u3000/gu, ' ').replace(/\s+/gu, ' ').trim()
-    === reference.title.replace(/\u3000/gu, ' ').replace(/\s+/gu, ' ').trim()
-  if (rawEqual) {
-    reasons.push('TITLE_EXACT')
-    return { matchType: 'exact', score: 1, reasons }
-  }
-  if (candidate.normalizedTitle === reference.normalizedTitle) {
-    reasons.push('TITLE_NORMALIZED')
-    return { matchType: 'high', score: 0.94, reasons }
-  }
-
-  const prefix = referenceContent.length >= 2 && candidate.normalizedContent.startsWith(referenceContent)
-  const titleSimilarity = similarity(candidate.normalizedContent, referenceContent)
-  if (sameNumber && (prefix || titleSimilarity >= 0.82)) {
-    reasons.push(prefix ? 'TITLE_PREFIX' : 'TITLE_SIMILAR')
-    if (candidate.kind === 'attached' || prefix) reasons.push('ATTACHED_TEXT')
-    return { matchType: 'fuzzy', score: prefix ? 0.86 : 0.82, reasons }
-  }
-  return null
-}
-
-function selectMatches(candidates: readonly BodyCandidate[], references: readonly ReferenceChapter[]): CandidateMatch[] {
-  const byNumber = new Map<number, ReferenceChapter[]>()
-  const special: ReferenceChapter[] = []
-  for (const reference of references) {
-    if (reference.chapterNumber === null) special.push(reference)
-    else byNumber.set(reference.chapterNumber, [...(byNumber.get(reference.chapterNumber) ?? []), reference])
-  }
-
-  const selected: CandidateMatch[] = []
-  const usedReferences = new Set<number>()
-  let lastReferenceOrder = -1
-  for (const candidate of candidates) {
-    const options = candidate.chapterNumber === null ? special : (byNumber.get(candidate.chapterNumber) ?? [])
-    const viable = options
-      .filter((reference) => reference.order > lastReferenceOrder && !usedReferences.has(reference.order))
-      .map((reference) => {
-        const classification = classifyMatch(candidate, reference)
-        return classification ? { candidate, reference, ...classification } : null
-      })
-      .filter((match): match is CandidateMatch => match !== null)
-      .sort((left, right) => right.score - left.score || left.reference.order - right.reference.order)
-    const best = viable[0]
-    if (!best) continue
-    selected.push(best)
-    usedReferences.add(best.reference.order)
-    lastReferenceOrder = best.reference.order
-  }
-  return selected
-}
-
-function splitHeadingFromBody(rawTitle: string, reference: ReferenceChapter): string {
-  const heading = ATTACHED_HEADING.exec(rawTitle)
-  if (!heading) return ''
-  const remainder = heading[2] ?? ''
-  const target = normalizeChapterTitleContent(reference.title)
-  if (!target || !normalizeChapterTitleContent(rawTitle).startsWith(target)) return ''
+function extractAttachedBody(line: string, normalizedPrefix: string): string {
   let normalized = ''
-  for (let index = 0; index < remainder.length; index += 1) {
-    normalized = normalizeChapterTitleContent(`第1章 ${remainder.slice(0, index + 1)}`)
-    if (normalized === target) return remainder.slice(index + 1).replace(/^[：:，,。！!？?\s]+/u, '').trim()
-    if (!target.startsWith(normalized)) break
+  for (let index = 0; index < line.length; index += 1) {
+    normalized = normalizeReferenceLabel(line.slice(0, index + 1))
+    if (normalized === normalizedPrefix) {
+      return line.slice(index + 1).replace(/^[：:，,。！!？?\s]+/u, '').trim()
+    }
+    if (!normalizedPrefix.startsWith(normalized)) break
   }
   return ''
 }
 
-function recalculate(chapters: readonly ParsedChapter[]): ParsedChapter[] {
+function paragraphsFromSegment(segment: string, profile: ProcessingProfile): string[] {
+  const cleaned = cleanText(segment, { profile }).text
+  return cleaned.split('\n').map((line) => line.trim()).filter(Boolean)
+}
+
+function recalculate(chapters: readonly ParsedChapter[], profile: ProcessingProfile): ParsedChapter[] {
+  const classified = classifySections(chapters, profile)
   let cumulativeCharacterStart = 0
   const sectionStarts = { main: 0, extra: 0 }
-  return chapters.map((chapter, order) => {
+  return classified.chapters.map((chapter, order) => {
     const characterCount = chapter.paragraphs.reduce((sum, paragraph) => sum + paragraph.length, 0)
-    const result = {
+    const positioned = {
       ...chapter,
       order,
       characterCount,
@@ -175,110 +227,116 @@ function recalculate(chapters: readonly ParsedChapter[]): ParsedChapter[] {
     }
     cumulativeCharacterStart += characterCount
     sectionStarts[chapter.section] += characterCount
-    return result
+    return positioned
   })
 }
 
-function applyMatches(chapters: readonly ParsedChapter[], matches: readonly CandidateMatch[]): ParsedChapter[] {
-  const boundaryMatches = new Map<number, CandidateMatch>()
-  const attachedMatches = new Map<number, CandidateMatch[]>()
-  for (const match of matches) {
-    if (match.candidate.kind === 'boundary') boundaryMatches.set(match.candidate.chapterIndex, match)
-    else attachedMatches.set(match.candidate.chapterIndex, [...(attachedMatches.get(match.candidate.chapterIndex) ?? []), match])
+function buildFinalChapters(
+  index: BodyLineIndex,
+  referenceAnchors: readonly ReferenceAnchor[],
+  bodyChapters: readonly ParsedChapter[],
+  profile: ProcessingProfile,
+): { chapters: ParsedChapter[]; bodyOnlyEntries: number } {
+  const referenceFinal: FinalAnchor[] = referenceAnchors.map((anchor) => ({
+    line: anchor.line,
+    title: anchor.matchType === 'body-prefix' ? anchor.line.trimmedLine : anchor.entry.rawLabel,
+    chapterNumber: anchor.entry.chapterNumber,
+    source: 'reference',
+    reference: anchor,
+  }))
+  const bodyOnly = locateBodyOnlyAnchors(index, bodyChapters, referenceAnchors)
+  const anchors = [...referenceFinal, ...bodyOnly]
+    .sort((left, right) => left.line.startCharacterOffset - right.line.startCharacterOffset)
+  if (anchors.length === 0) return { chapters: [...bodyChapters], bodyOnlyEntries: bodyChapters.length }
+
+  const chapters: ParsedChapter[] = []
+  const prefaceText = index.text.slice(0, anchors[0]?.line.startCharacterOffset ?? 0)
+  const prefaceParagraphs = paragraphsFromSegment(prefaceText, profile)
+  if (prefaceParagraphs.length > 0) {
+    chapters.push({
+      order: 0,
+      chapterNumber: null,
+      title: '前言',
+      section: 'main',
+      paragraphs: prefaceParagraphs,
+      characterCount: 0,
+      cumulativeCharacterStart: 0,
+      sectionCharacterStart: 0,
+    })
   }
 
-  const output: ParsedChapter[] = []
-  chapters.forEach((original, chapterIndex) => {
-    const boundary = boundaryMatches.get(chapterIndex)
-    const recoveredBoundaryBody = boundary?.matchType === 'fuzzy'
-      ? splitHeadingFromBody(original.title, boundary.reference)
-      : ''
-    const base: ParsedChapter = boundary ? {
-      ...original,
-      chapterNumber: boundary.reference.chapterNumber,
-      rawTitle: original.title,
-      referenceTitle: boundary.reference.title,
-      referenceMatchType: boundary.matchType,
-      title: boundary.reference.title,
-      paragraphs: [recoveredBoundaryBody, ...original.paragraphs].filter(Boolean),
-    } : { ...original, paragraphs: [...original.paragraphs] }
-
-    const splits = (attachedMatches.get(chapterIndex) ?? [])
-      .sort((left, right) => (left.candidate.paragraphIndex ?? 0) - (right.candidate.paragraphIndex ?? 0))
-    if (splits.length === 0) {
-      output.push(base)
-      return
+  anchors.forEach((anchor, indexInAnchors) => {
+    const nextOffset = anchors[indexInAnchors + 1]?.line.startCharacterOffset ?? index.text.length
+    const bodyStart = Math.min(index.text.length, anchor.line.endCharacterOffset + 1)
+    let segment = index.text.slice(bodyStart, nextOffset)
+    if (anchor.reference?.matchType === 'reference-prefix') {
+      const attached = extractAttachedBody(anchor.line.trimmedLine, anchor.reference.entry.normalizedLabel)
+      if (attached) segment = `${attached}\n${segment}`
     }
-
-    let start = 0
-    let currentTemplate = { ...base, paragraphs: [] }
-    let currentPrefix = recoveredBoundaryBody ? [recoveredBoundaryBody] : []
-    for (const split of splits) {
-      const paragraphIndex = split.candidate.paragraphIndex ?? 0
-      const before = original.paragraphs.slice(start, paragraphIndex)
-      const completed = { ...currentTemplate, paragraphs: [...currentPrefix, ...before] }
-      if (completed.paragraphs.length > 0) output.push(completed)
-      const attachedBody = splitHeadingFromBody(original.paragraphs[paragraphIndex] ?? '', split.reference)
-      currentTemplate = {
-        ...original,
-        chapterNumber: split.reference.chapterNumber,
-        title: split.reference.title,
-        rawTitle: original.paragraphs[paragraphIndex],
-        referenceTitle: split.reference.title,
-        referenceMatchType: split.matchType,
-        paragraphs: [],
-      }
-      currentPrefix = attachedBody ? [attachedBody] : []
-      start = paragraphIndex + 1
-    }
-    const final = { ...currentTemplate, paragraphs: [...currentPrefix, ...original.paragraphs.slice(start)] }
-    if (final.paragraphs.length > 0) output.push(final)
+    const matchType = anchor.reference?.matchType
+    chapters.push({
+      order: chapters.length,
+      chapterNumber: anchor.chapterNumber,
+      title: anchor.title,
+      section: 'main',
+      paragraphs: paragraphsFromSegment(segment, profile),
+      characterCount: 0,
+      cumulativeCharacterStart: 0,
+      sectionCharacterStart: 0,
+      rawTitle: anchor.line.trimmedLine,
+      referenceTitle: anchor.reference?.entry.rawLabel,
+      referenceMatchType: matchType,
+    })
   })
-  return recalculate(output)
+  return { chapters: recalculate(chapters, profile), bodyOnlyEntries: bodyOnly.length + (prefaceParagraphs.length > 0 ? 1 : 0) }
 }
 
 export function alignChaptersWithReference(
+  bodyText: string,
   bodyChapters: readonly ParsedChapter[],
   referenceIndex: ReferenceChapterIndex,
-  referenceEncoding?: 'utf-8' | 'gb18030',
+  options: { profile?: ProcessingProfile; referenceEncoding?: 'utf-8' | 'gb18030' } = {},
 ): ChapterAlignmentResult {
   const startedAt = performance.now()
-  const candidates = buildCandidates(bodyChapters)
-  const selected = selectMatches(candidates, referenceIndex.chapters)
-  const selectedReferenceOrders = new Set(selected.map(({ reference }) => reference.order))
-  const chapters = applyMatches(bodyChapters, selected)
-  const matches: ChapterAlignmentMatch[] = selected.map(({ candidate, reference, matchType, score, reasons }) => ({
-    referenceOrder: reference.order,
-    bodyCandidateOrder: candidate.order,
+  const profile = options.profile ?? 'generic'
+  const bodyIndex = buildBodyLineIndex(bodyText)
+  const strong = resolveStrongAnchors(bodyIndex, referenceIndex.entries)
+  const anchors = resolvePrefixAndFuzzyAnchors(bodyIndex, referenceIndex.entries, strong)
+  const resolvedOrders = new Set(anchors.map(({ entry }) => entry.order))
+  const built = buildFinalChapters(bodyIndex, anchors, bodyChapters, profile)
+  const matches: ChapterAlignmentMatch[] = anchors.map(({ entry, line, matchType, score, reasons }) => ({
+    referenceOrder: entry.order,
+    bodyLineNumber: line.lineNumber,
+    bodyStartOffset: line.startCharacterOffset,
     matchType,
     score,
     reasons,
   }))
-  for (const reference of referenceIndex.chapters) {
-    if (!selectedReferenceOrders.has(reference.order)) {
-      matches.push({ referenceOrder: reference.order, matchType: 'unresolved', score: 0, reasons: ['NO_BODY_MATCH'] })
+  for (const entry of referenceIndex.entries) {
+    if (!resolvedOrders.has(entry.order)) {
+      matches.push({ referenceOrder: entry.order, matchType: 'unresolved', score: 0, reasons: ['NO_BODY_MATCH'] })
     }
   }
-  const exactMatches = selected.filter(({ matchType }) => matchType === 'exact').length
-  const highMatches = selected.filter(({ matchType }) => matchType === 'high').length
-  const fuzzyMatches = selected.filter(({ matchType }) => matchType === 'fuzzy').length
+  const count = (type: ChapterMatchType) => anchors.filter(({ matchType }) => matchType === type).length
   return {
-    chapters,
+    chapters: built.chapters,
     matches: matches.sort((left, right) => left.referenceOrder - right.referenceOrder),
     diagnostics: {
       referenceSourceFileName: referenceIndex.sourceFileName,
-      referenceEncoding,
-      referenceChapterCount: referenceIndex.chapters.length,
-      referenceUnrecognizedLines: referenceIndex.unrecognizedLineCount,
-      bodyCandidateCount: candidates.length,
+      referenceEncoding: options.referenceEncoding,
+      referenceEntries: referenceIndex.entries.length,
+      bodyCandidateCount: bodyChapters.length,
       originalChapterCount: bodyChapters.length,
-      exactMatches,
-      highMatches,
-      fuzzyMatches,
-      unresolvedReferences: referenceIndex.chapters.length - selected.length,
-      bodyOnlyChapters: chapters.filter(({ referenceMatchType }) => !referenceMatchType).length,
-      finalChapterCount: chapters.length,
-      alignmentTimeMs: performance.now() - startedAt,
+      rawExactMatches: count('raw-exact'),
+      normalizedExactMatches: count('normalized-exact'),
+      bodyPrefixMatches: count('body-prefix'),
+      referencePrefixMatches: count('reference-prefix'),
+      fuzzyMatches: count('fuzzy'),
+      unresolvedReferences: referenceIndex.entries.length - anchors.length,
+      bodyOnlyEntries: built.bodyOnlyEntries,
+      finalEntries: built.chapters.length,
+      chapterNumberResets: referenceIndex.chapterNumberResets,
+      alignmentMs: performance.now() - startedAt,
     },
   }
 }

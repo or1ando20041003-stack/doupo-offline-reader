@@ -1,7 +1,7 @@
 import type { BookSection, SourceEncoding } from '../domain/models'
 
-export const PARSER_VERSION = '2.1.0'
-export const CLEANER_VERSION = '2.0.0'
+export const PARSER_VERSION = '2.2.0'
+export const CLEANER_VERSION = '2.1.0'
 
 export type ParseWarningCode =
   | 'EMPTY_TEXT'
@@ -50,30 +50,50 @@ export interface ParsedChapter {
   referenceMatchType?: Exclude<ChapterMatchType, 'unresolved'>
 }
 
-export interface ReferenceChapter {
+export type ReferenceEntryKind =
+  | 'chapter'
+  | 'preface'
+  | 'prologue'
+  | 'epilogue'
+  | 'appendix'
+  | 'special'
+  | 'unknown'
+
+export interface ReferenceEntry {
   order: number
+  rawLabel: string
+  normalizedLabel: string
   chapterNumber: number | null
-  title: string
-  normalizedTitle: string
+  chapterTitle?: string
+  groupTitle?: string
+  kind: ReferenceEntryKind
   sourceLine: number
 }
 
 export interface ReferenceChapterIndex {
-  chapters: ReferenceChapter[]
+  entries: ReferenceEntry[]
   sourceFileName: string
-  unrecognizedLineCount: number
+  headerLine?: string
   duplicateChapterNumberCount: number
-  duplicateTitleCount: number
+  duplicateLabelCount: number
+  chapterNumberResets: number
   warnings: string[]
 }
 
-export type ChapterMatchType = 'exact' | 'high' | 'fuzzy' | 'unresolved'
+export type ChapterMatchType =
+  | 'raw-exact'
+  | 'normalized-exact'
+  | 'body-prefix'
+  | 'reference-prefix'
+  | 'fuzzy'
+  | 'unresolved'
 
 export type ChapterMatchReason =
   | 'NUMBER_EXACT'
-  | 'TITLE_EXACT'
-  | 'TITLE_NORMALIZED'
-  | 'TITLE_PREFIX'
+  | 'RAW_LINE_EXACT'
+  | 'NORMALIZED_LINE_EXACT'
+  | 'BODY_PREFIX_OF_REFERENCE'
+  | 'REFERENCE_PREFIX_OF_BODY'
   | 'TITLE_SIMILAR'
   | 'ORDER_CONSISTENT'
   | 'ATTACHED_TEXT'
@@ -81,7 +101,8 @@ export type ChapterMatchReason =
 
 export interface ChapterAlignmentMatch {
   referenceOrder: number
-  bodyCandidateOrder?: number
+  bodyLineNumber?: number
+  bodyStartOffset?: number
   matchType: ChapterMatchType
   score: number
   reasons: ChapterMatchReason[]
@@ -90,17 +111,19 @@ export interface ChapterAlignmentMatch {
 export interface ChapterAlignmentDiagnostics {
   referenceSourceFileName: string
   referenceEncoding?: SourceEncoding
-  referenceChapterCount: number
-  referenceUnrecognizedLines: number
+  referenceEntries: number
   bodyCandidateCount: number
   originalChapterCount: number
-  exactMatches: number
-  highMatches: number
+  rawExactMatches: number
+  normalizedExactMatches: number
+  bodyPrefixMatches: number
+  referencePrefixMatches: number
   fuzzyMatches: number
   unresolvedReferences: number
-  bodyOnlyChapters: number
-  finalChapterCount: number
-  alignmentTimeMs: number
+  bodyOnlyEntries: number
+  finalEntries: number
+  chapterNumberResets: number
+  alignmentMs: number
   warning?: string
 }
 
@@ -136,6 +159,7 @@ export interface WorkerImportRequest {
   type: 'import'
   payload: {
     buffer: ArrayBuffer
+    sourceFileName: string
     reference?: {
       buffer: ArrayBuffer
       sourceFileName: string
