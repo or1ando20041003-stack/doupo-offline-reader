@@ -23,6 +23,17 @@ export interface Book {
   extraCharacterCount: number
   parserVersion: string
   cleanerVersion: string
+  importDiagnostics?: {
+    referenceChapterCount: number
+    bodyCandidateCount: number
+    exactMatches: number
+    highMatches: number
+    fuzzyMatches: number
+    unresolvedReferences: number
+    bodyOnlyChapters: number
+    finalChapterCount: number
+    alignmentTimeMs: number
+  }
 }
 
 export interface Chapter {
@@ -36,6 +47,9 @@ export interface Chapter {
   characterCount: number
   cumulativeCharacterStart: number
   sectionCharacterStart: number
+  rawTitle?: string
+  referenceTitle?: string
+  referenceMatchType?: 'exact' | 'high' | 'fuzzy'
 }
 
 export interface ReadingProgress {

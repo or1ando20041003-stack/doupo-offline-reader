@@ -13,11 +13,16 @@ function formatCharacters(value: number): string {
   return value >= 10_000 ? `${(value / 10_000).toFixed(1)} 万` : value.toLocaleString('zh-CN')
 }
 
+function formatFileSize(value: number): string {
+  return value >= 1024 * 1024 ? `${(value / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(value / 1024))} KB`
+}
+
 export function ImportConfirmation({ prepared, saving, error, onCancel, onConfirm }: ImportConfirmationProps) {
   const [title, setTitle] = useState(prepared.suggestedTitle)
   useEffect(() => { setTitle(prepared.suggestedTitle) }, [prepared])
   const duplicate = prepared.duplicateBook
   const highPriorityWarning = prepared.warnings.find((warning) => warning.priority === 'high')
+  const alignment = prepared.summary.chapterAlignment
 
   return (
     <div className="bookshelf-dialog-backdrop">
@@ -29,16 +34,36 @@ export function ImportConfirmation({ prepared, saving, error, onCancel, onConfir
           <input value={title} maxLength={120} disabled={saving} onChange={(event) => setTitle(event.target.value)} />
         </label>
         <dl className="import-book-facts">
-          <div><dt>文件</dt><dd title={prepared.fileName}>{prepared.fileName}</dd></div>
+          <div><dt>正文文件</dt><dd title={prepared.fileName}>{prepared.fileName} · {formatFileSize(prepared.fileSize)}</dd></div>
           <div><dt>章节</dt><dd>{prepared.summary.totalChapters.toLocaleString('zh-CN')}</dd></div>
           <div><dt>正文</dt><dd>{formatCharacters(prepared.summary.totalCharacterCount)} 字</dd></div>
           <div><dt>编码</dt><dd>{prepared.summary.encoding.toUpperCase()}</dd></div>
         </dl>
+        {alignment && (
+          <section className="alignment-summary" aria-labelledby="alignment-summary-title">
+            <h3 id="alignment-summary-title">章节目录辅助结果</h3>
+            <p title={alignment.referenceSourceFileName}>目录：{alignment.referenceSourceFileName}</p>
+            <dl className="alignment-stats">
+              <div><dt>目录章节</dt><dd>{alignment.referenceChapterCount.toLocaleString('zh-CN')}</dd></div>
+              <div><dt>正文原始检测</dt><dd>{alignment.originalChapterCount.toLocaleString('zh-CN')}</dd></div>
+              <div><dt>高置信匹配</dt><dd>{(alignment.exactMatches + alignment.highMatches).toLocaleString('zh-CN')}</dd></div>
+              <div><dt>模糊匹配</dt><dd>{alignment.fuzzyMatches.toLocaleString('zh-CN')}</dd></div>
+              <div><dt>未找到目录章节</dt><dd>{alignment.unresolvedReferences.toLocaleString('zh-CN')}</dd></div>
+              <div><dt>正文独有章节</dt><dd>{alignment.bodyOnlyChapters.toLocaleString('zh-CN')}</dd></div>
+              <div><dt>最终章节</dt><dd>{alignment.finalChapterCount.toLocaleString('zh-CN')}</dd></div>
+            </dl>
+            {alignment.warning ? (
+              <p className="alignment-note">{alignment.warning}</p>
+            ) : alignment.unresolvedReferences > 0 ? (
+              <p className="alignment-note">部分目录章节未在正文中找到可靠边界，已保持与相邻正文合并，不影响导入。</p>
+            ) : null}
+          </section>
+        )}
         {highPriorityWarning && <p className="import-warning">{highPriorityWarning.message}</p>}
         {duplicate && (
           <div className="duplicate-notice" role="status">
             <strong>书架中已存在《{duplicate.title}》</strong>
-            <span>默认不会覆盖，请选择处理方式。</span>
+            <span>默认不会覆盖。覆盖会重新处理正文，并将这本书的阅读进度重置到开头。</span>
           </div>
         )}
         {error && <p className="error-text" role="alert">{error}</p>}

@@ -1,6 +1,6 @@
 import type { BookSection, SourceEncoding } from '../domain/models'
 
-export const PARSER_VERSION = '2.0.0'
+export const PARSER_VERSION = '2.1.0'
 export const CLEANER_VERSION = '2.0.0'
 
 export type ParseWarningCode =
@@ -45,6 +45,69 @@ export interface ParsedChapter {
   characterCount: number
   cumulativeCharacterStart: number
   sectionCharacterStart: number
+  rawTitle?: string
+  referenceTitle?: string
+  referenceMatchType?: Exclude<ChapterMatchType, 'unresolved'>
+}
+
+export interface ReferenceChapter {
+  order: number
+  chapterNumber: number | null
+  title: string
+  normalizedTitle: string
+  sourceLine: number
+}
+
+export interface ReferenceChapterIndex {
+  chapters: ReferenceChapter[]
+  sourceFileName: string
+  unrecognizedLineCount: number
+  duplicateChapterNumberCount: number
+  duplicateTitleCount: number
+  warnings: string[]
+}
+
+export type ChapterMatchType = 'exact' | 'high' | 'fuzzy' | 'unresolved'
+
+export type ChapterMatchReason =
+  | 'NUMBER_EXACT'
+  | 'TITLE_EXACT'
+  | 'TITLE_NORMALIZED'
+  | 'TITLE_PREFIX'
+  | 'TITLE_SIMILAR'
+  | 'ORDER_CONSISTENT'
+  | 'ATTACHED_TEXT'
+  | 'NO_BODY_MATCH'
+
+export interface ChapterAlignmentMatch {
+  referenceOrder: number
+  bodyCandidateOrder?: number
+  matchType: ChapterMatchType
+  score: number
+  reasons: ChapterMatchReason[]
+}
+
+export interface ChapterAlignmentDiagnostics {
+  referenceSourceFileName: string
+  referenceEncoding?: SourceEncoding
+  referenceChapterCount: number
+  referenceUnrecognizedLines: number
+  bodyCandidateCount: number
+  originalChapterCount: number
+  exactMatches: number
+  highMatches: number
+  fuzzyMatches: number
+  unresolvedReferences: number
+  bodyOnlyChapters: number
+  finalChapterCount: number
+  alignmentTimeMs: number
+  warning?: string
+}
+
+export interface ChapterAlignmentResult {
+  chapters: ParsedChapter[]
+  matches: ChapterAlignmentMatch[]
+  diagnostics: ChapterAlignmentDiagnostics
 }
 
 export interface ParseResult {
@@ -73,6 +136,10 @@ export interface WorkerImportRequest {
   type: 'import'
   payload: {
     buffer: ArrayBuffer
+    reference?: {
+      buffer: ArrayBuffer
+      sourceFileName: string
+    }
   }
 }
 
@@ -89,6 +156,7 @@ export interface WorkerParsedPayload {
   totalCharacterCount: number
   mainCharacterCount: number
   extraCharacterCount: number
+  chapterAlignment?: ChapterAlignmentDiagnostics
 }
 
 export interface ProcessingTimings {

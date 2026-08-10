@@ -10,6 +10,7 @@ import {
   inferBookTitle,
   parseBookBufferInWorker,
   prepareBookImport,
+  prepareBookImportFiles,
 } from './importBook'
 
 const parsed: WorkerParsedPayload = {
@@ -40,6 +41,7 @@ function testFile(name = '测试小说 完整版.TXT'): File {
   const bytes = new TextEncoder().encode('第一章\n测试正文')
   return {
     name,
+    size: bytes.byteLength,
     arrayBuffer: async () => bytes.buffer.slice(0),
   } as File
 }
@@ -111,6 +113,89 @@ describe('two-phase book import', () => {
     expect(await repository.getBooks()).toEqual([])
     expect(await database.chapters.count()).toBe(0)
     expect(await database.progress.count()).toBe(0)
+  })
+
+  it('uses an optional reference file without creating it as another Book', async () => {
+    const alignment = {
+      referenceSourceFileName: '测试小说-目录.txt',
+      referenceEncoding: 'utf-8' as const,
+      referenceChapterCount: 1,
+      referenceUnrecognizedLines: 0,
+      bodyCandidateCount: 1,
+      originalChapterCount: 1,
+      exactMatches: 1,
+      highMatches: 0,
+      fuzzyMatches: 0,
+      unresolvedReferences: 0,
+      bodyOnlyChapters: 0,
+      finalChapterCount: 1,
+      alignmentTimeMs: 2,
+    }
+    const prepared = await prepareBookImportFiles(
+      { bodyFile: testFile('测试小说.txt'), referenceFile: testFile('测试小说-目录.txt') },
+      () => undefined,
+      repository,
+      fakeWorker({ type: 'result', payload: { ...parsed, chapterAlignment: alignment } }),
+    )
+    expect(prepared.summary.chapterAlignment).toEqual(alignment)
+    await confirmBookImport(prepared, { title: '测试小说' }, () => undefined, repository)
+    const books = await repository.getBooks()
+    expect(books).toHaveLength(1)
+    expect(books[0]).toMatchObject({ sourceFileName: '测试小说.txt', importDiagnostics: { exactMatches: 1 } })
+    expect(books.some(({ sourceFileName }) => sourceFileName.includes('目录'))).toBe(false)
+  })
+
+  it('keeps each reference index scoped to its own import task', async () => {
+    const firstPayload = {
+      ...parsed,
+      contentHash: 'book-a-hash',
+      chapterAlignment: {
+        referenceSourceFileName: '甲目录.txt', referenceChapterCount: 1, referenceUnrecognizedLines: 0,
+        bodyCandidateCount: 1, originalChapterCount: 1, exactMatches: 1, highMatches: 0, fuzzyMatches: 0,
+        unresolvedReferences: 0, bodyOnlyChapters: 0, finalChapterCount: 1, alignmentTimeMs: 1,
+      },
+    }
+    const secondPayload = {
+      ...parsed,
+      contentHash: 'book-b-hash',
+      chapterAlignment: {
+        ...firstPayload.chapterAlignment,
+        referenceSourceFileName: '乙目录.txt',
+        exactMatches: 0,
+        highMatches: 1,
+      },
+    }
+    const first = await prepareBookImportFiles(
+      { bodyFile: testFile('甲书.txt'), referenceFile: testFile('甲目录.txt') },
+      () => undefined, repository, fakeWorker({ type: 'result', payload: firstPayload }),
+    )
+    const second = await prepareBookImportFiles(
+      { bodyFile: testFile('乙书.txt'), referenceFile: testFile('乙目录.txt') },
+      () => undefined, repository, fakeWorker({ type: 'result', payload: secondPayload }),
+    )
+    await confirmBookImport(first, { title: '甲书' }, () => undefined, repository)
+    await confirmBookImport(second, { title: '乙书' }, () => undefined, repository)
+    const books = await repository.getBooks()
+    expect(books).toHaveLength(2)
+    expect(books.find(({ title }) => title === '甲书')?.importDiagnostics?.exactMatches).toBe(1)
+    expect(books.find(({ title }) => title === '乙书')?.importDiagnostics?.highMatches).toBe(1)
+  })
+
+  it('falls back to normal parsing when the reference file cannot be read', async () => {
+    const brokenReference = {
+      name: '乱码目录.txt',
+      size: 10,
+      arrayBuffer: async () => { throw new DOMException('read failed', 'NotReadableError') },
+    } as unknown as File
+    const prepared = await prepareBookImportFiles(
+      { bodyFile: testFile(), referenceFile: brokenReference },
+      () => undefined,
+      repository,
+      fakeWorker(),
+    )
+    expect(prepared.summary.chapterAlignment?.warning).toContain('正文仍可继续导入')
+    await confirmBookImport(prepared, { title: '仍可导入' }, () => undefined, repository)
+    expect(await repository.getBooks()).toHaveLength(1)
   })
 
   it('detects a duplicate by hash and never overwrites by default', async () => {

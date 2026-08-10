@@ -3,11 +3,12 @@ import type { ImportStage } from '../book-processing/types'
 import { readerRepository } from '../db/repositories'
 import type { BookshelfEntry, ReaderBookState } from '../services/bookshelf'
 import { loadBookshelf, loadReaderBook } from '../services/bookshelf'
-import type { DuplicateAction, PreparedBookImport } from '../services/importBook'
-import { confirmBookImport, getImportErrorMessage, prepareBookImport } from '../services/importBook'
+import type { BookImportFiles, DuplicateAction, PreparedBookImport } from '../services/importBook'
+import { confirmBookImport, getImportErrorMessage, prepareBookImportFiles } from '../services/importBook'
 import { BookshelfScreen } from './BookshelfScreen'
 import { ImportConfirmation } from './ImportConfirmation'
 import { ImportProgress } from './ImportProgress'
+import { ImportSetupDialog } from './ImportSetupDialog'
 import { ReaderScreen } from './ReaderScreen'
 
 type AppState =
@@ -26,6 +27,7 @@ export function App() {
   const [preparedImport, setPreparedImport] = useState<PreparedBookImport>()
   const [confirmError, setConfirmError] = useState<string>()
   const [savingImport, setSavingImport] = useState(false)
+  const [showImportSetup, setShowImportSetup] = useState(false)
 
   const showBookshelf = useCallback(async () => {
     const entries = await loadBookshelf()
@@ -43,12 +45,14 @@ export function App() {
     return () => { active = false }
   }, [])
 
-  const handleFile = useCallback(async (file: File) => {
+  const handleFiles = useCallback(async (files: BookImportFiles) => {
+    const file = files.bodyFile
+    setShowImportSetup(false)
     setPreparedImport(undefined)
     setConfirmError(undefined)
     const updateStage = (stage: ImportStage) => setImportTask({ fileName: file.name, stage })
     try {
-      const prepared = await prepareBookImport(file, updateStage)
+      const prepared = await prepareBookImportFiles(files, updateStage)
       setPreparedImport(prepared)
     } catch (error) {
       console.error('Import failed:', error)
@@ -84,6 +88,7 @@ export function App() {
     setImportTask(undefined)
     setConfirmError(undefined)
     setSavingImport(false)
+    setShowImportSetup(false)
   }, [])
 
   const openBook = useCallback(async (bookId: string) => {
@@ -113,11 +118,17 @@ export function App() {
     return <>
       <BookshelfScreen
         entries={state.entries}
-        importDisabled={Boolean(importTask || preparedImport)}
-        onFile={handleFile}
+        importDisabled={Boolean(importTask || preparedImport || showImportSetup)}
+        onImport={() => setShowImportSetup(true)}
         onOpen={(bookId) => { void openBook(bookId) }}
         onDelete={deleteBook}
       />
+      {showImportSetup && (
+        <ImportSetupDialog
+          onCancel={() => setShowImportSetup(false)}
+          onStart={(files) => { void handleFiles(files) }}
+        />
+      )}
       {importTask && (!preparedImport || savingImport) && (
         <ImportProgress
           fileName={importTask.fileName}

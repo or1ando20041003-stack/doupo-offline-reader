@@ -17,6 +17,9 @@ export type DuplicateAction = 'overwrite' | 'keep'
 
 export interface PreparedBookImport {
   fileName: string
+  fileSize: number
+  referenceFileName?: string
+  referenceFileSize?: number
   suggestedTitle: string
   parsed: WorkerParsedPayload
   warnings: ImportWarning[]
@@ -29,7 +32,13 @@ export interface PreparedBookImport {
     totalCharacterCount: number
     warningCount: number
     timings: ProcessingTimings
+    chapterAlignment?: WorkerParsedPayload['chapterAlignment']
   }
+}
+
+export interface BookImportFiles {
+  bodyFile: File
+  referenceFile?: File
 }
 
 export interface ConfirmBookImportOptions {
@@ -74,6 +83,7 @@ export function parseBookBufferInWorker(
   buffer: ArrayBuffer,
   onStage: (stage: ImportStage) => void,
   createWorker: ImportWorkerFactory = defaultWorkerFactory,
+  reference?: { buffer: ArrayBuffer; sourceFileName: string },
 ): Promise<WorkerParsedPayload> {
   return new Promise((resolve, reject) => {
     const worker = createWorker()
@@ -99,8 +109,9 @@ export function parseBookBufferInWorker(
       reject(new Error('后台文本处理程序启动失败，请刷新页面后重试。'))
     }
 
-    const request: WorkerImportRequest = { type: 'import', payload: { buffer } }
-    worker.postMessage(request, [buffer])
+    const request: WorkerImportRequest = { type: 'import', payload: { buffer, reference } }
+    const transfer: Transferable[] = reference ? [buffer, reference.buffer] : [buffer]
+    worker.postMessage(request, transfer)
   })
 }
 
@@ -127,6 +138,16 @@ export async function prepareBookImport(
   repository: ReaderRepository = readerRepository,
   createWorker: ImportWorkerFactory = defaultWorkerFactory,
 ): Promise<PreparedBookImport> {
+  return prepareBookImportFiles({ bodyFile: file }, onStage, repository, createWorker)
+}
+
+export async function prepareBookImportFiles(
+  files: BookImportFiles,
+  onStage: (stage: ImportStage) => void,
+  repository: ReaderRepository = readerRepository,
+  createWorker: ImportWorkerFactory = defaultWorkerFactory,
+): Promise<PreparedBookImport> {
+  const { bodyFile: file, referenceFile } = files
   if (!file.name.toLowerCase().endsWith('.txt')) {
     throw new Error('请选择扩展名为 .txt 的小说文件。')
   }
@@ -138,13 +159,46 @@ export async function prepareBookImport(
   } catch (error) {
     throw new Error(getImportErrorMessage(error))
   }
-  const parsed = await parseBookBufferInWorker(buffer, onStage, createWorker)
+  let reference: { buffer: ArrayBuffer; sourceFileName: string } | undefined
+  let referenceReadWarning: string | undefined
+  if (referenceFile) {
+    if (!referenceFile.name.toLowerCase().endsWith('.txt')) {
+      referenceReadWarning = '章节目录不是 TXT 文件，已自动忽略并使用普通章节解析。'
+    } else {
+      try {
+        reference = { buffer: await referenceFile.arrayBuffer(), sourceFileName: referenceFile.name }
+      } catch {
+        referenceReadWarning = '无法读取章节目录 TXT，已自动忽略；正文仍可继续导入。'
+      }
+    }
+  }
+  const parsed = await parseBookBufferInWorker(buffer, onStage, createWorker, reference)
+  if (referenceFile && referenceReadWarning && !parsed.chapterAlignment) {
+    parsed.chapterAlignment = {
+      referenceSourceFileName: referenceFile.name,
+      referenceChapterCount: 0,
+      referenceUnrecognizedLines: 0,
+      bodyCandidateCount: parsed.chapters.length,
+      originalChapterCount: parsed.chapters.length,
+      exactMatches: 0,
+      highMatches: 0,
+      fuzzyMatches: 0,
+      unresolvedReferences: 0,
+      bodyOnlyChapters: parsed.chapters.length,
+      finalChapterCount: parsed.chapters.length,
+      alignmentTimeMs: 0,
+      warning: referenceReadWarning,
+    }
+  }
   const suggestedTitle = inferBookTitle(file.name)
   const duplicateBook = await findDuplicateBook(suggestedTitle, parsed, repository)
   const warnings: ImportWarning[] = [...parsed.cleaningWarnings, ...parsed.warnings]
   onStage('reviewing')
   return {
     fileName: file.name,
+    fileSize: file.size,
+    referenceFileName: referenceFile?.name,
+    referenceFileSize: referenceFile?.size,
     suggestedTitle,
     parsed,
     warnings,
@@ -157,6 +211,7 @@ export async function prepareBookImport(
       totalCharacterCount: parsed.totalCharacterCount,
       warningCount: warnings.length,
       timings: parsed.timings,
+      chapterAlignment: parsed.chapterAlignment,
     },
   }
 }
@@ -205,6 +260,17 @@ export async function confirmBookImport(
     extraCharacterCount: prepared.parsed.extraCharacterCount,
     parserVersion: PARSER_VERSION,
     cleanerVersion: CLEANER_VERSION,
+    importDiagnostics: prepared.summary.chapterAlignment ? {
+      referenceChapterCount: prepared.summary.chapterAlignment.referenceChapterCount,
+      bodyCandidateCount: prepared.summary.chapterAlignment.bodyCandidateCount,
+      exactMatches: prepared.summary.chapterAlignment.exactMatches,
+      highMatches: prepared.summary.chapterAlignment.highMatches,
+      fuzzyMatches: prepared.summary.chapterAlignment.fuzzyMatches,
+      unresolvedReferences: prepared.summary.chapterAlignment.unresolvedReferences,
+      bodyOnlyChapters: prepared.summary.chapterAlignment.bodyOnlyChapters,
+      finalChapterCount: prepared.summary.chapterAlignment.finalChapterCount,
+      alignmentTimeMs: prepared.summary.chapterAlignment.alignmentTimeMs,
+    } : undefined,
   }
   const initialProgress: ReadingProgress = {
     bookId,

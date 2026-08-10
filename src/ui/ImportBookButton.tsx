@@ -1,15 +1,15 @@
-import { FilePicker } from './FilePicker'
-
 interface ImportBookButtonProps {
   disabled?: boolean
   compact?: boolean
-  onFile: (file: File) => void
+  onClick: () => void
 }
 
-export function ImportBookButton({ disabled = false, compact = false, onFile }: ImportBookButtonProps) {
+export function ImportBookButton({ disabled = false, compact = false, onClick }: ImportBookButtonProps) {
   return (
     <span className={compact ? 'bookshelf-import compact' : 'bookshelf-import'}>
-      <FilePicker label="＋ 导入 TXT" disabled={disabled} secondary={compact} onFile={onFile} />
+      <button type="button" className={compact ? 'button button-secondary' : 'button'} disabled={disabled} onClick={onClick}>
+        ＋ 导入 TXT
+      </button>
     </span>
   )
 }

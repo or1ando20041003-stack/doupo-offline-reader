@@ -5,10 +5,12 @@ import type { PreparedBookImport } from '../services/importBook'
 import { ImportConfirmation } from './ImportConfirmation'
 import { ImportProgress } from './ImportProgress'
 import { DeleteBookDialog } from './DeleteBookDialog'
+import { ImportSetupDialog } from './ImportSetupDialog'
 
 function preparedImport(duplicateBook?: Book): PreparedBookImport {
   return {
     fileName: '斗破苍穹完整版.TXT',
+    fileSize: 12_345,
     suggestedTitle: '斗破苍穹',
     parsed: {
       encoding: 'utf-8',
@@ -39,6 +41,18 @@ function preparedImport(duplicateBook?: Book): PreparedBookImport {
 }
 
 describe('book import UI', () => {
+  it('clearly distinguishes required body TXT from optional reference TXT', () => {
+    const html = renderToStaticMarkup(
+      <ImportSetupDialog onCancel={() => undefined} onStart={() => undefined} />,
+    )
+    expect(html).toContain('小说正文 TXT')
+    expect(html).toContain('章节目录 TXT')
+    expect(html).toContain('必选')
+    expect(html).toContain('可选')
+    expect(html).toContain('保持正文原有合并状态，不影响导入')
+    expect(html).toContain('disabled=""')
+  })
+
   it('shows a concise step-by-step import status', () => {
     const html = renderToStaticMarkup(
       <ImportProgress fileName="斗破苍穹.txt" stage="parsing" onDismiss={() => undefined} />,
@@ -98,6 +112,33 @@ describe('book import UI', () => {
     expect(html).toContain('取消')
     expect(html).toContain('保留两本')
     expect(html).toContain('覆盖原书')
+  })
+
+  it('shows alignment statistics as non-blocking information', () => {
+    const prepared = preparedImport()
+    prepared.summary.chapterAlignment = {
+      referenceSourceFileName: '斗破苍穹-目录.txt',
+      referenceEncoding: 'utf-8',
+      referenceChapterCount: 1_520,
+      referenceUnrecognizedLines: 2,
+      bodyCandidateCount: 1_478,
+      originalChapterCount: 1_478,
+      exactMatches: 1_400,
+      highMatches: 40,
+      fuzzyMatches: 24,
+      unresolvedReferences: 56,
+      bodyOnlyChapters: 14,
+      finalChapterCount: 1_492,
+      alignmentTimeMs: 31,
+    }
+    const html = renderToStaticMarkup(
+      <ImportConfirmation prepared={prepared} saving={false} onCancel={() => undefined} onConfirm={() => undefined} />,
+    )
+    expect(html).toContain('章节目录辅助结果')
+    expect(html).toContain('未找到目录章节')
+    expect(html).toContain('56')
+    expect(html).toContain('已保持与相邻正文合并，不影响导入')
+    expect(html).toContain('确认导入')
   })
 
   it('shows the selected book details before deletion', () => {

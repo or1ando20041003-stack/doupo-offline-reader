@@ -8,12 +8,12 @@ import { ImportBookButton } from './ImportBookButton'
 interface BookshelfScreenProps {
   entries: readonly BookshelfEntry[]
   importDisabled: boolean
-  onFile: (file: File) => void
+  onImport: () => void
   onOpen: (bookId: string) => void
   onDelete: (bookId: string) => Promise<void>
 }
 
-export function BookshelfScreen({ entries, importDisabled, onFile, onOpen, onDelete }: BookshelfScreenProps) {
+export function BookshelfScreen({ entries, importDisabled, onImport, onOpen, onDelete }: BookshelfScreenProps) {
   const [deleteBookId, setDeleteBookId] = useState<string>()
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string>()
@@ -45,11 +45,11 @@ export function BookshelfScreen({ entries, importDisabled, onFile, onOpen, onDel
           <h1>我的书架</h1>
           <p>{entries.length > 0 ? `${entries.length} 本小说保存在这台设备` : '安静地收好每一本故事'}</p>
         </div>
-        {entries.length > 0 && <ImportBookButton compact disabled={importDisabled} onFile={onFile} />}
+        {entries.length > 0 && <ImportBookButton compact disabled={importDisabled} onClick={onImport} />}
       </header>
 
       {entries.length === 0 ? (
-        <EmptyBookshelf busy={importDisabled} onFile={onFile} />
+        <EmptyBookshelf busy={importDisabled} onImport={onImport} />
       ) : (
         <section className="bookshelf-grid" aria-label="小说书架">
           {entries.map((entry) => (

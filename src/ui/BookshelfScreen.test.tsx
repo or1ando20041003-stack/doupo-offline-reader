@@ -28,7 +28,7 @@ function entry(id: string, title: string, started = true): BookshelfEntry {
 }
 
 const callbacks = {
-  onFile: () => undefined,
+  onImport: () => undefined,
   onOpen: () => undefined,
   onDelete: async () => undefined,
 }
